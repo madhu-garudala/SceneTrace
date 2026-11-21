@@ -16,3 +16,6 @@ coverage/
 next-env.d.ts
 .DS_Store
 .vercel
+
+# Voice turn journal (local only)
+transcripts/
