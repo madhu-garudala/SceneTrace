@@ -29,11 +29,6 @@ const MODEL_META: Record<
     name: "Gemini 4 Carbon",
     desc: "Maximum multimodal reasoning depth",
   },
-  "gemini-3.8-flash": {
-    short: "Flash 3.8",
-    name: "Gemini 3.8 Flash",
-    desc: "Fastest clip turnaround",
-  },
 };
 
 export type StudioNavbarProps = {
@@ -193,7 +188,9 @@ export function StudioNavbar({
               className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs font-medium text-[var(--ink-primary)] transition-colors hover:border-[var(--border-strong)] disabled:opacity-50"
             >
               <Sparkles className="h-3.5 w-3.5 text-amber-500" />
-              <span>{MODEL_META[videoModel].short}</span>
+              <span>
+                {(MODEL_META[videoModel] ?? MODEL_META["gemini-4-neon"]).short}
+              </span>
               <ChevronDown className="h-3 w-3 text-[var(--ink-muted)]" />
             </button>
 

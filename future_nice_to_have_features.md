@@ -12,7 +12,7 @@ Roadmap items intentionally deferred past the initial hackathon build so we prio
 ## 2. Voice Interactivity (Hands-Free Conversational Shopping)
 - **Goal**: Let shoppers talk naturally to SceneTrace while watching a clip — e.g., *"What jacket is he wearing right now, and can you find it in medium under $120?"* — and hear concise spoken answers while offers update live on screen.
 - **Approach**:
-  - Pair **Gemini Live / multimodal audio input** (capturing the current playback timestamp `player.getCurrentTime()` automatically when the user speaks) with **`gemini-3.8-flash-tts`** for low-latency spoken responses.
+  - Pair **Gemini 4 Live / native multimodal audio input & output** (capturing the current playback timestamp `player.getCurrentTime()` automatically when the user speaks) for low-latency spoken responses.
   - Route spoken refinements ("show me cheaper options" or "switch to size 10") directly into the stateful **Gemini Managed Agent** (`previous_interaction_id`) and live **Shop MCP** variant selector.
 
 ## 3. Additional Post-Hackathon Enhancements

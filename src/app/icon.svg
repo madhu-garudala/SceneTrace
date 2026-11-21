@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="32" height="32" fill="none">
+  <defs>
+    <linearGradient id="st-bg" x1="2" y1="1" x2="22" y2="23" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#191a20" />
+      <stop offset="100%" stop-color="#121215" />
+    </linearGradient>
+    <radialGradient id="st-dot" cx="38%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#f59e0b" />
+    </radialGradient>
+  </defs>
+
+  <!-- Rounded dark obsidian squircle with subtle titanium-charcoal border -->
+  <rect
+    x="0.6"
+    y="0.6"
+    width="22.8"
+    height="22.8"
+    rx="5.5"
+    fill="url(#st-bg)"
+    stroke="#2a2a32"
+    stroke-width="1.2"
+  />
+
+  <!-- Four editorial cinema-aperture viewfinder brackets in warm ivory -->
+  <g
+    stroke="#f5f2eb"
+    stroke-width="2.1"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M4 8V6a2 2 0 0 1 2-2h2" />
+    <path d="M4 16v2a2 2 0 0 0 2 2h2" />
+    <path d="M16 4h2a2 2 0 0 1 2 2v2" />
+    <path d="M16 20h2a2 2 0 0 0 2-2v-2" />
+  </g>
+
+  <!-- Subtle warm amber aperture halo + high-contrast focal target dot -->
+  <circle cx="12" cy="12" r="4" fill="#f59e0b" fill-opacity="0.16" />
+  <circle cx="12" cy="12" r="2.6" fill="url(#st-dot)" />
+</svg>

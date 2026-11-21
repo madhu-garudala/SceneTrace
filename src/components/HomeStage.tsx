@@ -91,6 +91,7 @@ export function HomeStage({
   onSubmitTrace,
 }: HomeStageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   return (
     <div className="ambient-stage min-h-[calc(100vh-4rem)]">
@@ -180,6 +181,7 @@ export function HomeStage({
               What products should SceneTrace find?
             </label>
             <textarea
+              ref={questionInputRef}
               id="home-question-input"
               rows={2}
               required
@@ -205,7 +207,18 @@ export function HomeStage({
                   <button
                     key={q}
                     type="button"
-                    onClick={() => onChangeQuestion(q)}
+                    onClick={() => {
+                      onChangeQuestion(q);
+                      questionInputRef.current?.focus();
+                      requestAnimationFrame(() => {
+                        const target = questionInputRef.current;
+                        if (target) {
+                          target.focus();
+                          const end = target.value.length;
+                          target.setSelectionRange(end, end);
+                        }
+                      });
+                    }}
                     className={`rounded-full border px-3 py-1 text-xs transition-colors ${
                       selected
                         ? "border-amber-500/45 bg-amber-500/12 text-amber-700 dark:text-amber-300"

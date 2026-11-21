@@ -30,6 +30,15 @@ export const metadata: Metadata = {
   title: "SceneTrace — Spot it in the scene. Own it on Shopify.",
   description:
     "Identify products across YouTube scenes with Gemini 4, verify SKUs in a Managed Agent sandbox, rank listings with Gemini Decisions, and check out on Shopify.",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml", sizes: "any" },
+    ],
+    shortcut: ["/icon.svg"],
+    apple: [
+      { url: "/apple-icon", sizes: "180x180", type: "image/png" },
+    ],
+  },
 };
 
 const THEME_INIT_SCRIPT = `

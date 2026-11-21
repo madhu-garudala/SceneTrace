@@ -73,9 +73,7 @@ export function SceneTraceStudio({
 }: SceneTraceStudioProps) {
   const [darkMode, setDarkMode] = useState(true);
   const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [question, setQuestion] = useState(
-    "Which shoes and jacket is the host wearing?",
-  );
+  const [question, setQuestion] = useState("");
   const [videoModel, setVideoModel] =
     useState<AllowedVideoModel>(defaultVideoModel);
   const [managedAgentEnabled, setManagedAgentEnabled] = useState(true);
@@ -209,6 +207,9 @@ export function SceneTraceStudio({
   const handleGoHome = useCallback(() => {
     activeRunIdRef.current++;
     setStage("idle");
+    setYoutubeUrl("");
+    setQuestion("");
+    setCompanionFile(null);
     setTraceError(null);
     setFrameWarning(null);
     setServedFromCache(false);
