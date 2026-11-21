@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { ExternalLink, Film, Maximize2, Pause, Play, X } from "lucide-react";
+import {
+  Camera,
+  ExternalLink,
+  Film,
+  Maximize2,
+  Pause,
+  Play,
+  X,
+} from "lucide-react";
 import type { EvidenceFrame, TracedItem } from "@/lib/types";
 import { buildYouTubeTimestampUrl, formatTimestamp } from "@/lib/video/youtube";
 
@@ -86,6 +94,8 @@ export type YouTubeMonitorProps = {
   onDurationDetected?: (durationSec: number) => void;
   framesByItem: Record<string, EvidenceFrame[]>;
   hasCompanionMedia: boolean;
+  /** Camera traces have no video: show the captured still instead of the player. */
+  cameraStill?: EvidenceFrame | null;
 };
 
 export function YouTubeMonitor({
@@ -97,6 +107,7 @@ export function YouTubeMonitor({
   onDurationDetected,
   framesByItem,
   hasCompanionMedia,
+  cameraStill = null,
 }: YouTubeMonitorProps) {
   const rawDomId = useId().replace(/:/g, "");
   const playerContainerId = `yt_monitor_${rawDomId}`;
@@ -235,6 +246,69 @@ export function YouTubeMonitor({
   const allUploadedStills =
     activeFrames.length > 0 &&
     activeFrames.every((f) => f.kind === "uploaded_still");
+  const activeBox = cameraStill ? activeItem?.bestBox2d ?? null : null;
+
+  if (cameraStill) {
+    return (
+      <div className="space-y-4">
+        <div className="surface-card overflow-hidden rounded-3xl">
+          <button
+            type="button"
+            onClick={() => setLightboxFrame(cameraStill)}
+            aria-label="Inspect captured photo"
+            className="relative block w-full bg-black focus:outline-none"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={cameraStill.dataUrl}
+              alt={cameraStill.label}
+              className="block w-full object-contain"
+            />
+            {activeBox && (
+              <span
+                className="pointer-events-none absolute rounded-lg border-2 border-amber-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.25)]"
+                style={{
+                  top: `${activeBox[0] / 10}%`,
+                  left: `${activeBox[1] / 10}%`,
+                  height: `${(activeBox[2] - activeBox[0]) / 10}%`,
+                  width: `${(activeBox[3] - activeBox[1]) / 10}%`,
+                }}
+              />
+            )}
+          </button>
+          <div className="flex items-center justify-between px-4 py-2.5 text-xs">
+            <span className="inline-flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+              <Camera className="h-3 w-3 text-amber-500" />
+              <span>
+                Camera capture · {cameraStill.width}×{cameraStill.height}px
+              </span>
+            </span>
+            {activeItem && (
+              <span className="truncate pl-3 text-[11px] text-[var(--ink-secondary)]">
+                {activeItem.label}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {lightboxFrame && (
+          <div
+            role="dialog"
+            aria-modal="true"
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
+            onClick={() => setLightboxFrame(null)}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightboxFrame.dataUrl}
+              alt={lightboxFrame.label}
+              className="max-h-[85vh] w-auto rounded-2xl border border-white/15 object-contain"
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">

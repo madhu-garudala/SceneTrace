@@ -34,6 +34,8 @@ export type ItemDossierCardProps = {
   isSelected: boolean;
   onSelect: () => void;
   onSeekTo: (seconds: number) => void;
+  /** False for camera stills: there is no video timeline to jump to. */
+  hasTimeline?: boolean;
   frames: EvidenceFrame[];
   offers: Offer[];
   isMatching: boolean;
@@ -61,6 +63,7 @@ export function ItemDossierCard({
   isSelected,
   onSelect,
   onSeekTo,
+  hasTimeline = true,
   frames,
   offers,
   isMatching,
@@ -116,17 +119,19 @@ export function ItemDossierCard({
             </h2>
           </div>
 
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onSeekTo(item.bestEvidenceSec);
-            }}
-            className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/12 px-3.5 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-300"
-          >
-            <Play className="h-3 w-3 fill-current" />
-            <span>Best view · {formatTimestamp(item.bestEvidenceSec)}</span>
-          </button>
+          {hasTimeline && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSeekTo(item.bestEvidenceSec);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/12 px-3.5 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 dark:text-amber-300"
+            >
+              <Play className="h-3 w-3 fill-current" />
+              <span>Best view · {formatTimestamp(item.bestEvidenceSec)}</span>
+            </button>
+          )}
         </div>
 
         <p className="mt-2.5 text-sm leading-relaxed text-[var(--ink-secondary)]">
@@ -175,7 +180,11 @@ export function ItemDossierCard({
                   e.stopPropagation();
                   onSeekTo(feat.atSec);
                 }}
-                title={`${humanizeTraitName(feat.name)} (${feat.source} at ${formatTimestamp(feat.atSec)})`}
+                title={
+                  hasTimeline
+                    ? `${humanizeTraitName(feat.name)} (${feat.source} at ${formatTimestamp(feat.atSec)})`
+                    : `${humanizeTraitName(feat.name)} (${feat.source})`
+                }
                 className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-sunken)]/80 px-3 py-1 text-xs text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
               >
                 <span
@@ -188,9 +197,11 @@ export function ItemDossierCard({
                   }`}
                 />
                 <span>{feat.value}</span>
-                <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
-                  {formatTimestamp(feat.atSec)}
-                </span>
+                {hasTimeline && (
+                  <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
+                    {formatTimestamp(feat.atSec)}
+                  </span>
+                )}
               </button>
             ))}
           </div>
