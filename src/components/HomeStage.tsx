@@ -88,6 +88,7 @@ export type HomeStageProps = {
   isRunning: boolean;
   traceError: string | null;
   onSubmitTrace: (override?: { url: string; question: string }) => void;
+  captureRequested?: boolean;
 };
 
 export function HomeStage({
@@ -105,6 +106,7 @@ export function HomeStage({
   isRunning,
   traceError,
   onSubmitTrace,
+  captureRequested,
 }: HomeStageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -209,6 +211,7 @@ export function HomeStage({
               capturedFile={companionFile}
               onCapture={onChangeCompanionFile}
               disabled={isRunning}
+              captureRequested={captureRequested}
             />
           ) : (
             <>

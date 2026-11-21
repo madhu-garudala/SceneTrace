@@ -12,10 +12,13 @@ import {
   SlidersHorizontal,
   Zap,
 } from "lucide-react";
+import { BagDrawer } from "@/components/BagDrawer";
 import { CheckoutModal } from "@/components/CheckoutModal";
 import { DiagnosticsDrawer } from "@/components/DiagnosticsDrawer";
 import { HomeStage, type TraceInputSource } from "@/components/HomeStage";
 import { ItemDossierCard } from "@/components/ItemDossierCard";
+import { RepairPanel } from "@/components/RepairPanel";
+import { VoiceBar } from "@/components/VoiceBar";
 import { StudioNavbar } from "@/components/StudioNavbar";
 import { YouTubeMonitor } from "@/components/YouTubeMonitor";
 import {
@@ -49,6 +52,13 @@ import {
   readCompanionStillImage,
   readFileAsBase64,
 } from "@/lib/video/frames-client";
+import type { RepairVerdict } from "@/lib/repair/types";
+import {
+  dispatchVoiceIntent,
+  refinementPhrase,
+  type VoiceActions,
+} from "@/lib/voice/actions";
+import type { VoiceContext, VoiceIntent, VoiceSlots } from "@/lib/voice/types";
 import {
   parseAndNormalizeYouTubeUrl,
   type NormalizedYouTubeVideo,
@@ -144,6 +154,31 @@ export function SceneTraceStudio({
   const [modalCheckout, setModalCheckout] = useState<CheckoutSummary | null>(
     null,
   );
+  // Every checkout created this session, newest first (one per merchant offer).
+  const [bag, setBag] = useState<CheckoutSummary[]>([]);
+  const [bagOpen, setBagOpen] = useState(false);
+  const putInBag = useCallback((c: CheckoutSummary) => {
+    setBag((prev) => {
+      const next = [c, ...prev.filter((x) => x.checkoutRef !== c.checkoutRef)];
+      try {
+        sessionStorage.setItem("scenetrace-bag", JSON.stringify(next));
+      } catch {
+        // ignore storage quota
+      }
+      return next;
+    });
+  }, []);
+  const removeFromBag = useCallback((ref: string) => {
+    setBag((prev) => {
+      const next = prev.filter((x) => x.checkoutRef !== ref);
+      try {
+        sessionStorage.setItem("scenetrace-bag", JSON.stringify(next));
+      } catch {
+        // ignore storage quota
+      }
+      return next;
+    });
+  }, []);
   const [savedCheckout, setSavedCheckout] = useState<CheckoutSummary | null>(
     null,
   );
@@ -164,6 +199,13 @@ export function SceneTraceStudio({
         const parsed = JSON.parse(stored) as CheckoutSummary;
         if (parsed?.checkoutRef && parsed?.continueUrl) {
           setSavedCheckout(parsed);
+        }
+      }
+      const storedBag = sessionStorage.getItem("scenetrace-bag");
+      if (storedBag) {
+        const parsedBag = JSON.parse(storedBag) as CheckoutSummary[];
+        if (Array.isArray(parsedBag)) {
+          setBag(parsedBag.filter((c) => c?.checkoutRef && c?.continueUrl));
         }
       }
     } catch {
@@ -719,32 +761,23 @@ export function SceneTraceStudio({
       let workingItems = [...extractJson.items];
       const collectedAgentReports: Record<string, ManagedAgentReport> = {};
 
-      if (managedAgentEnabled) {
-        setStage("agent_investigating");
-        setStageAnnouncement(
-          "Researching SKUs and price benchmarks in Managed Agent sandbox…",
-        );
-
-        const enriched = await Promise.all(
-          workingItems.map((it) =>
-            runAgentForItem({
-              targetItem: it,
-              baseQuestion: targetQuestion.trim(),
-              primaryFrame: capturedFramesMap[it.itemId]?.[0] ?? null,
-              bypassCache,
-              reRunMatchAfter: false,
-            }),
-          ),
-        );
-        if (runId !== activeRunIdRef.current) return;
-        workingItems = enriched.map((e) => {
-          if (e.report) {
-            collectedAgentReports[e.updatedItem.itemId] = e.report;
-            if (e.report.cacheHit) anyStageHitCache = true;
-          }
-          return e.updatedItem;
-        });
-      }
+      // The managed agent researches SKUs while the catalog search runs on the
+      // extracted items, so offers show up without waiting on the sandbox.
+      // When the agent's findings change what we'd search for, that item is
+      // matched again below; otherwise its first offers stand.
+      const agentRun = managedAgentEnabled
+        ? Promise.all(
+            workingItems.map((it) =>
+              runAgentForItem({
+                targetItem: it,
+                baseQuestion: targetQuestion.trim(),
+                primaryFrame: capturedFramesMap[it.itemId]?.[0] ?? null,
+                bypassCache,
+                reRunMatchAfter: false,
+              }),
+            ),
+          )
+        : null;
 
       setStage("matching");
       setStageAnnouncement(
@@ -780,6 +813,52 @@ export function SceneTraceStudio({
 
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
+
+      if (agentRun) {
+        setStage("agent_investigating");
+        setStageAnnouncement(
+          "Offers ready. Managed Agent is still checking SKUs and price benchmarks…",
+        );
+        const enriched = await agentRun;
+        if (runId !== activeRunIdRef.current) return;
+        const searchKey = (it: TracedItem) =>
+          JSON.stringify([it.brand, it.modelReference, it.searchQueries]);
+        const before = new Map(workingItems.map((it) => [it.itemId, searchKey(it)]));
+        workingItems = enriched.map((e) => {
+          if (e.report) {
+            collectedAgentReports[e.updatedItem.itemId] = e.report;
+            if (e.report.cacheHit) anyStageHitCache = true;
+          }
+          return e.updatedItem;
+        });
+        const changed = workingItems.filter(
+          (it) => before.get(it.itemId) !== searchKey(it),
+        );
+        if (changed.length > 0) {
+          setStage("matching");
+          setStageAnnouncement("Re-ranking offers with the agent's SKU findings…");
+          await Promise.all(
+            changed.map(async (it) => {
+              const matchOut = await matchSingleItem({
+                activeTraceId: extractJson.traceId,
+                targetItem: it,
+                itemFrames: capturedFramesMap[it.itemId] ?? [],
+                bypassCache,
+                runId,
+              });
+              // Keep the first offers if the second pass comes back empty.
+              if (matchOut.offers.length > 0) {
+                collectedOffers[it.itemId] = matchOut.offers;
+                if (matchOut.diagnostics) collectedDiags[it.itemId] = matchOut.diagnostics;
+              } else if (collectedOffers[it.itemId]?.length) {
+                setOffersByItem((prev) => ({ ...prev, [it.itemId]: collectedOffers[it.itemId] }));
+              }
+              if (matchOut.cacheHit) anyStageHitCache = true;
+            }),
+          );
+          if (runId !== activeRunIdRef.current) return;
+        }
+      }
 
       setServedFromCache(anyStageHitCache);
       setStage(hadAnyError ? "partial" : "complete");
@@ -1133,6 +1212,7 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      putInBag(data.checkout);
       if (traceId) {
         const updatedHist = appendCheckoutEventToTrace(traceId, {
           at: new Date().toISOString(),
@@ -1192,6 +1272,7 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      putInBag(data.checkout);
       if (traceId) {
         const updatedHist = appendCheckoutEventToTrace(traceId, {
           at: new Date().toISOString(),
@@ -1238,6 +1319,223 @@ export function SceneTraceStudio({
     return count;
   }, [matchDiagnosticsByItem]);
 
+
+  // ---------------------------------------------------------------------------
+  // Voice + repair. Buying is the default path; the repair check runs only when
+  // the shopper asks for it (or taps the offer on an item that looks damaged).
+  // ---------------------------------------------------------------------------
+  const [captureRequested, setCaptureRequested] = useState(false);
+  const pendingVoiceTraceRef = useRef<string | null>(null);
+  const [selectedOfferIdx, setSelectedOfferIdx] = useState(0);
+  const [repairState, setRepairState] = useState<{
+    itemId: string;
+    label: string;
+    loading: boolean;
+    verdict: RepairVerdict | null;
+    error: string | null;
+  } | null>(null);
+  const repairRunRef = useRef(0);
+
+  const DEFAULT_VOICE_QUESTION = "What is this product and where can I buy it?";
+
+  const handleCompanionChange = (file: File | null) => {
+    setCompanionFile(file);
+    if (file) setCaptureRequested(false);
+  };
+
+  // A spoken "what is this?" in camera mode captures first, then traces the
+  // fresh still once it lands in state.
+  useEffect(() => {
+    const pending = pendingVoiceTraceRef.current;
+    if (pending === null || !companionFile || inputSource !== "camera") return;
+    pendingVoiceTraceRef.current = null;
+    setQuestion(pending);
+    void handleTrace({ question: pending });
+    // handleTrace is recreated every render; companionFile is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [companionFile]);
+
+  const activeItem: TracedItem | null =
+    items.find((it) => it.itemId === activeItemId) ?? items[0] ?? null;
+  const activeOffers: Offer[] = activeItem
+    ? (offersByItem[activeItem.itemId] ?? [])
+    : [];
+
+  useEffect(() => {
+    setSelectedOfferIdx(0);
+  }, [activeItem?.itemId]);
+
+  useEffect(() => {
+    if (isHomeView) {
+      repairRunRef.current++;
+      setRepairState(null);
+    }
+  }, [isHomeView]);
+
+  const checkoutOffer = (offer: Offer | undefined) => {
+    if (!offer) return;
+    void executeCheckout({
+      offerId: offer.offerId,
+      offerToken: offer.offerToken,
+      offerTitle: offer.title,
+      sellerName: offer.sellerName,
+    });
+  };
+
+  const repairImageFor = async (
+    item: TracedItem,
+  ): Promise<{ imageBase64: string; mimeType: string } | null> => {
+    const frame = framesByItem[item.itemId]?.[0] ?? cameraStill;
+    if (frame?.dataUrl) {
+      const m = /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(frame.dataUrl);
+      if (m) return { mimeType: m[1], imageBase64: m[2] };
+    }
+    if (companionFile && companionFile.type.startsWith("image/")) {
+      return {
+        mimeType: companionFile.type,
+        imageBase64: await readFileAsBase64(companionFile),
+      };
+    }
+    return null;
+  };
+
+  const runRepair = async (item: TracedItem, note?: string) => {
+    const runId = ++repairRunRef.current;
+    setActiveItemId(item.itemId);
+    setRepairState({ itemId: item.itemId, label: item.label, loading: true, verdict: null, error: null });
+    try {
+      const image = await repairImageFor(item);
+      if (!image) throw new Error("No still of this item to inspect. Capture a photo first.");
+      const res = await fetch("/api/traces/repair", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...image, item, note: note?.slice(0, 500) }),
+      });
+      const body = (await res.json().catch(() => null)) as
+        | (RepairVerdict & { error?: string; message?: string })
+        | null;
+      if (!res.ok || !body || !body.decision) {
+        throw new Error(body?.message ?? body?.error ?? `Repair check failed (${res.status}).`);
+      }
+      if (runId !== repairRunRef.current) return;
+      setRepairState({ itemId: item.itemId, label: item.label, loading: false, verdict: body, error: null });
+    } catch (err) {
+      if (runId !== repairRunRef.current) return;
+      setRepairState({
+        itemId: item.itemId,
+        label: item.label,
+        loading: false,
+        verdict: null,
+        error: err instanceof Error ? err.message : "Repair check failed.",
+      });
+    }
+  };
+
+  const voiceActions: VoiceActions = {
+    switchSource: (source) => {
+      if (!isHomeView) handleGoHome();
+      handleChangeInputSource(source);
+    },
+    capture: () => {
+      if (inputSource !== "camera") handleChangeInputSource("camera");
+      if (!isHomeView) handleGoHome();
+      setCompanionFile(null);
+      setCaptureRequested(true);
+    },
+    trace: (spoken) => {
+      const q = spoken?.trim() || question.trim() || DEFAULT_VOICE_QUESTION;
+      if (inputSource === "camera") {
+        // On the home screen with a still already taken, trace that still.
+        if (isHomeView && companionFile) {
+          setQuestion(q);
+          return handleTrace({ question: q });
+        }
+        // Otherwise this is a new object: back to the live camera, capture, trace.
+        if (!isHomeView) handleGoHome();
+        setCompanionFile(null);
+        pendingVoiceTraceRef.current = q;
+        setCaptureRequested(true);
+        return;
+      }
+      setQuestion(q);
+      return handleTrace({ question: q });
+    },
+    refine: (r) => {
+      const phrase = refinementPhrase(r);
+      if (!phrase) return;
+      const base = question.trim() || DEFAULT_VOICE_QUESTION;
+      const q = `${base}, ${phrase}`;
+      setQuestion(q);
+      return handleTrace({ question: q, bypassCache: true });
+    },
+    selectOffer: ({ index, description }) => {
+      if (!activeOffers.length) return;
+      if (typeof index === "number" && index >= 1 && index <= activeOffers.length) {
+        setSelectedOfferIdx(index - 1);
+        return;
+      }
+      if (description) {
+        const words = description.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
+        let best = -1;
+        let bestScore = 0;
+        activeOffers.forEach((o, i) => {
+          const hay = `${o.title} ${o.sellerName}`.toLowerCase();
+          const score = words.filter((w) => hay.includes(w)).length;
+          if (score > bestScore) {
+            best = i;
+            bestScore = score;
+          }
+        });
+        if (best >= 0) setSelectedOfferIdx(best);
+      }
+    },
+    checkout: () => checkoutOffer(activeOffers[selectedOfferIdx] ?? activeOffers[0]),
+    diagnose: (note) => {
+      if (!activeItem) return;
+      return runRepair(activeItem, note);
+    },
+    nextItem: () => {
+      if (items.length > 1 && activeItem) {
+        const i = items.findIndex((it) => it.itemId === activeItem.itemId);
+        setActiveItemId(items[(i + 1) % items.length].itemId);
+        return;
+      }
+      // One item (or none): move on to the next object.
+      handleGoHome();
+      if (inputSource === "camera") setCaptureRequested(false);
+    },
+    showEvidence: () => setDiagnosticsOpen(true),
+    stop: () => {},
+  };
+  const voiceActionsRef = useRef(voiceActions);
+  voiceActionsRef.current = voiceActions;
+
+  const handleVoiceIntent = useCallback(
+    (intent: VoiceIntent, slots: VoiceSlots) => {
+      // Any new spoken command moves on from an open checkout, bag or evidence
+      // overlay; otherwise the next step happens hidden behind it.
+      if (intent !== "unknown" && intent !== "checkout") {
+        setCheckoutModalOpen(false);
+        setBagOpen(false);
+        if (intent !== "show_evidence") setDiagnosticsOpen(false);
+      }
+      return dispatchVoiceIntent(intent, slots, voiceActionsRef.current);
+    },
+    [],
+  );
+
+  const voiceContext: VoiceContext = {
+    source: inputSource,
+    hasCapture: Boolean(companionFile),
+    hasItems: items.length > 0,
+    hasOffers: activeOffers.length > 0,
+    busy: isRunning || Boolean(repairState?.loading),
+  };
+
+  const repairOfferItem =
+    !isHomeView && activeItem && inputSource === "camera" ? activeItem : null;
+  const looksDamaged = Boolean(repairOfferItem?.condition?.damageVisible);
+
   const visibleItems = useMemo(() => {
     if (itemFilterId === "all") return items;
     return items.filter((it) => it.itemId === itemFilterId);
@@ -1259,13 +1557,8 @@ export function SceneTraceStudio({
         managedAgentEnabled={managedAgentEnabled}
         onToggleManagedAgent={() => setManagedAgentEnabled((v) => !v)}
         savedCheckout={savedCheckout}
-        onOpenSavedCheckout={() => {
-          if (!savedCheckout) return;
-          setCheckoutError(null);
-          setPriceChangePrompt(null);
-          setModalCheckout(savedCheckout);
-          setCheckoutModalOpen(true);
-        }}
+        bagCount={bag.length}
+        onOpenSavedCheckout={() => setBagOpen(true)}
         onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         promotedTopCount={promotedTopCount}
         hasTraceResults={
@@ -1275,6 +1568,9 @@ export function SceneTraceStudio({
         onToggleTheme={toggleTheme}
         country={defaultCountry}
         currency={defaultCurrency}
+        voiceSlot={
+          <VoiceBar context={voiceContext} onIntent={handleVoiceIntent} />
+        }
       />
 
       {isHomeView ? (
@@ -1287,7 +1583,8 @@ export function SceneTraceStudio({
           onChangeQuestion={setQuestion}
           liveUrlPreview={liveUrlPreview}
           companionFile={companionFile}
-          onChangeCompanionFile={setCompanionFile}
+          onChangeCompanionFile={handleCompanionChange}
+          captureRequested={captureRequested}
           managedAgentEnabled={managedAgentEnabled}
           onToggleManagedAgent={() => setManagedAgentEnabled((v) => !v)}
           isRunning={isRunning}
@@ -1589,6 +1886,67 @@ export function SceneTraceStudio({
                 </div>
               )}
 
+              {repairOfferItem && !repairState && (
+                <div
+                  className={`flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${
+                    looksDamaged
+                      ? "border-amber-500/40 bg-amber-500/10"
+                      : "border-[var(--border-subtle)] bg-[var(--bg-sunken)]/60"
+                  }`}
+                >
+                  <div className="min-w-0 text-xs">
+                    <div className="font-medium text-[var(--ink-primary)]">
+                      {looksDamaged
+                        ? `${repairOfferItem.label} looks damaged`
+                        : `Something wrong with ${repairOfferItem.label}?`}
+                    </div>
+                    <div className="truncate text-[var(--ink-muted)]">
+                      {looksDamaged && repairOfferItem.condition?.signs.length
+                        ? repairOfferItem.condition.signs.slice(0, 3).join(" · ")
+                        : "Check whether a repair part beats buying new."}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isRunning}
+                    onClick={() => void runRepair(repairOfferItem)}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-amber-500/40 bg-amber-500/12 px-3.5 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-500/20 disabled:opacity-50 dark:text-amber-300"
+                  >
+                    Is it worth fixing?
+                  </button>
+                </div>
+              )}
+
+              {repairState && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs text-[var(--ink-muted)]">
+                    <span>Repair check · {repairState.label}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        repairRunRef.current++;
+                        setRepairState(null);
+                      }}
+                      className="hover:text-[var(--ink-primary)]"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <RepairPanel
+                    verdict={repairState.verdict}
+                    loading={repairState.loading}
+                    error={repairState.error}
+                    onBuyPart={() => {
+                      const url = repairState.verdict?.part?.productUrl;
+                      if (url) window.open(url, "_blank", "noopener,noreferrer");
+                    }}
+                    onBuyNew={() =>
+                      checkoutOffer((offersByItem[repairState.itemId] ?? [])[0])
+                    }
+                  />
+                </div>
+              )}
+
               {visibleItems.map((item, idx) => {
                 const agentReport = agentReportsByItem[item.itemId];
                 const itemFrames = framesByItem[item.itemId] ?? [];
@@ -1641,6 +1999,21 @@ export function SceneTraceStudio({
           </section>
         </main>
       )}
+
+      <BagDrawer
+        open={bagOpen}
+        onClose={() => setBagOpen(false)}
+        bag={bag}
+        onRemove={removeFromBag}
+        onOpenCheckout={(c) => {
+          setBagOpen(false);
+          setCheckoutError(null);
+          setPriceChangePrompt(null);
+          setSavedCheckout(c);
+          setModalCheckout(c);
+          setCheckoutModalOpen(true);
+        }}
+      />
 
       <CheckoutModal
         open={checkoutModalOpen}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   ChevronDown,
@@ -50,6 +50,8 @@ export type StudioNavbarProps = {
   managedAgentEnabled: boolean;
   onToggleManagedAgent: () => void;
   savedCheckout: CheckoutSummary | null;
+  /** Items added this session; the bag pill shows whenever there are any. */
+  bagCount?: number;
   onOpenSavedCheckout: () => void;
   onOpenDiagnostics: () => void;
   promotedTopCount: number;
@@ -58,6 +60,8 @@ export type StudioNavbarProps = {
   onToggleTheme: () => void;
   country: string;
   currency: string;
+  /** Voice control, rendered at the start of the right-hand controls. */
+  voiceSlot?: ReactNode;
 };
 
 export function StudioNavbar({
@@ -69,6 +73,7 @@ export function StudioNavbar({
   managedAgentEnabled,
   onToggleManagedAgent,
   savedCheckout,
+  bagCount = 0,
   onOpenSavedCheckout,
   onOpenDiagnostics,
   promotedTopCount,
@@ -77,6 +82,7 @@ export function StudioNavbar({
   onToggleTheme,
   country,
   currency,
+  voiceSlot,
 }: StudioNavbarProps) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -168,6 +174,7 @@ export function StudioNavbar({
 
         {/* Right: Clean Studio Controls */}
         <div className="flex items-center gap-2">
+          {voiceSlot}
           {/* Managed Agent Toggle Pill */}
           <button
             type="button"
@@ -245,7 +252,7 @@ export function StudioNavbar({
           </div>
 
           {/* Saved Checkout Bag Pill */}
-          {savedCheckout && (
+          {(savedCheckout || bagCount > 0) && (
             <button
               type="button"
               onClick={onOpenSavedCheckout}
@@ -253,8 +260,13 @@ export function StudioNavbar({
             >
               <ShoppingBag className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">
-                {savedCheckout.orderPlaced ? "Order Placed" : "Bag"}
+                {savedCheckout?.orderPlaced && bagCount <= 1 ? "Order Placed" : "Bag"}
               </span>
+              {bagCount > 0 && (
+                <span className="rounded-full bg-emerald-500/20 px-1.5 font-[family-name:var(--font-mono)] text-[10px] font-semibold">
+                  {bagCount}
+                </span>
+              )}
             </button>
           )}
 
