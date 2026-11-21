@@ -332,3 +332,18 @@ export async function readCompanionStillImage(
     URL.revokeObjectURL(bitmapUrl);
   }
 }
+
+/** Reads a file's bytes as raw base64 (no `data:` prefix) for JSON upload. */
+export function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      const commaIdx = result.indexOf(",");
+      resolve(commaIdx >= 0 ? result.slice(commaIdx + 1) : result);
+    };
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Could not read captured image."));
+    reader.readAsDataURL(file);
+  });
+}
