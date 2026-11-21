@@ -2043,6 +2043,34 @@ export function SceneTraceStudio({
                     selectingVariantOfferId={selectingVariantOfferId}
                     variantErrorsByOffer={variantSelectErrorByOffer}
                     onSelectVariantOption={handleSelectVariantOption}
+                    highlightOfferId={
+                      pendingOfferObj && pendingOffer?.itemId === item.itemId
+                        ? pendingOfferObj.offerId
+                        : null
+                    }
+                    highlightSlot={
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+                          Add this one to your bag?
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleVoiceConfirm(false, "")}
+                            className="rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                          >
+                            No
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleVoiceConfirm(true, "")}
+                            className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 dark:bg-emerald-500 dark:text-neutral-950"
+                          >
+                            Yes, add it
+                          </button>
+                        </div>
+                      </div>
+                    }
                     onBuyOnShopify={(offer) =>
                       executeCheckout({
                         offerId: offer.offerId,
