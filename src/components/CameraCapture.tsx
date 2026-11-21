@@ -30,12 +30,15 @@ export type CameraCaptureProps = {
   capturedFile: File | null;
   onCapture: (file: File | null) => void;
   disabled?: boolean;
+  /** Set by voice ("take a picture"). Captures as soon as the preview has a frame. */
+  captureRequested?: boolean;
 };
 
 export function CameraCapture({
   capturedFile,
   onCapture,
   disabled,
+  captureRequested,
 }: CameraCaptureProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -151,6 +154,29 @@ export function CameraCapture({
       setCapturing(false);
     }
   };
+
+  // A spoken capture can arrive before the stream has its first frame (the
+  // preview may have only just mounted), so poll briefly for real dimensions.
+  const handleCaptureRef = useRef(handleCapture);
+  handleCaptureRef.current = handleCapture;
+  useEffect(() => {
+    if (!captureRequested || cameraState !== "live" || capturedFile) return;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const attempt = () => {
+      const v = videoRef.current;
+      if (v && v.videoWidth && v.videoHeight) {
+        void handleCaptureRef.current();
+        return;
+      }
+      if (++tries < 40) timer = setTimeout(attempt, 100);
+    };
+    // Give auto-exposure a beat after the stream starts.
+    timer = setTimeout(attempt, 350);
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [captureRequested, cameraState, capturedFile]);
 
   if (capturedFile) {
     return (

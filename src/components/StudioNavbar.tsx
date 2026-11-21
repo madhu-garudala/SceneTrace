@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   ChevronDown,
@@ -48,6 +48,8 @@ export type StudioNavbarProps = {
   onToggleTheme: () => void;
   country: string;
   currency: string;
+  /** Voice control, rendered at the start of the right-hand controls. */
+  voiceSlot?: ReactNode;
 };
 
 export function StudioNavbar({
@@ -67,6 +69,7 @@ export function StudioNavbar({
   onToggleTheme,
   country,
   currency,
+  voiceSlot,
 }: StudioNavbarProps) {
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -158,6 +161,7 @@ export function StudioNavbar({
 
         {/* Right: Clean Studio Controls */}
         <div className="flex items-center gap-2">
+          {voiceSlot}
           {/* Managed Agent Toggle Pill */}
           <button
             type="button"
