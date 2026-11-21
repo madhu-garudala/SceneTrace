@@ -8,6 +8,7 @@ import {
 } from "@/lib/matching/decisions";
 import { signOfferToken, verifyOfferToken } from "@/lib/security/tokens";
 import { selectVariantByOptionsWithGetProduct } from "@/lib/shop/client";
+import { logServerSpan } from "@/lib/telemetry/logger";
 import type { TracedItem } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -16,6 +17,7 @@ export const maxDuration = 45;
 const NON_VISUAL_OPTION_REGEX = /^(size|shoe\s*size|waist|length|inseam|width|fit)$/i;
 
 const SelectVariantSchema = z.object({
+  traceId: z.string().max(120).optional(),
   offerToken: z.string().min(20).max(8192),
   desiredOptions: z
     .array(
@@ -64,6 +66,7 @@ const SelectVariantSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
   try {
     const rawJson = await request.json();
     const parsed = SelectVariantSchema.safeParse(rawJson);
@@ -77,6 +80,7 @@ export async function POST(request: Request) {
       );
     }
 
+    const traceId = parsed.data.traceId ?? "trc_variant";
     const baseOffer = verifyOfferToken(parsed.data.offerToken);
     const defaults = getShopLocaleDefaults();
     const country = (parsed.data.country ?? defaults.country).toUpperCase();
@@ -161,6 +165,22 @@ export async function POST(request: Request) {
       imageUrl: resolved.imageUrl,
     });
 
+    logServerSpan({
+      traceId,
+      span: "shop.select_variant",
+      provider: visualOptionChanged
+        ? "mcp.shop.com + gemini-decision-1"
+        : "mcp.shop.com",
+      status: "ok",
+      durationMs: Date.now() - startedAt,
+      meta: {
+        itemId: baseOffer.itemId,
+        sellerDomain: resolved.sellerDomain,
+        visualOptionChanged,
+        matchLabel: scoredOffer.matchLabel,
+      },
+    });
+
     return NextResponse.json(
       {
         updated: {
@@ -182,7 +202,10 @@ export async function POST(request: Request) {
           rationale: scoredOffer.rationale,
         },
       },
-      { status: 200 },
+      {
+        status: 200,
+        headers: { "x-scenetrace-id": traceId },
+      },
     );
   } catch (err) {
     const message =

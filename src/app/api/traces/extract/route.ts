@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildCacheKey, withServerCache } from "@/lib/cache/store";
 import { resolveVideoModel } from "@/lib/env";
+import { logServerSpan } from "@/lib/telemetry/logger";
 import type { ExtractResponse } from "@/lib/types";
 import { extractItemsFromYouTube } from "@/lib/video/extract";
 import {
@@ -45,6 +46,7 @@ export async function POST(request: Request) {
       model: effectiveModel,
     });
 
+    const reqStartedAt = Date.now();
     const { value: result, cacheHit } = await withServerCache({
       key: cacheKey,
       ttlMs: EXTRACT_CACHE_TTL_MS,
@@ -57,8 +59,23 @@ export async function POST(request: Request) {
         }),
     });
 
+    const traceId = `trace_${crypto.randomUUID()}`;
+    logServerSpan({
+      traceId,
+      span: "video.extract",
+      provider: effectiveModel,
+      status: "ok",
+      durationMs: Date.now() - reqStartedAt,
+      cacheHit,
+      correlationId: result.diagnostics.interactionId ?? null,
+      meta: {
+        videoId: normalizedVideo.videoId,
+        itemCount: result.items.length,
+      },
+    });
+
     const payload: ExtractResponse = {
-      traceId: `trace_${crypto.randomUUID()}`,
+      traceId,
       videoId: normalizedVideo.videoId,
       canonicalUrl: normalizedVideo.canonicalUrl,
       question: parsed.data.question,
@@ -69,7 +86,10 @@ export async function POST(request: Request) {
       },
     };
 
-    return NextResponse.json(payload, { status: 200 });
+    return NextResponse.json(payload, {
+      status: 200,
+      headers: { "x-scenetrace-id": traceId },
+    });
   } catch (err) {
     if (err instanceof YouTubeUrlError) {
       return NextResponse.json({ error: err.message }, { status: 400 });

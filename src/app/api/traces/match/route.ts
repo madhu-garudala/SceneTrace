@@ -9,6 +9,7 @@ import {
 } from "@/lib/matching/decisions";
 import { signOfferToken } from "@/lib/security/tokens";
 import { retrieveShopifyCandidatesForItem } from "@/lib/shop/client";
+import { logServerSpan } from "@/lib/telemetry/logger";
 import type {
   EvidenceFrame,
   ItemMatchDiagnostics,
@@ -221,11 +222,29 @@ export async function POST(request: Request) {
       };
     };
 
+    const reqStartedAt = Date.now();
     const { value: coreResult, cacheHit } = await withServerCache({
       key: cacheKey,
       ttlMs: MATCH_CACHE_TTL_MS,
       bypass: parsed.data.bypassCache,
       compute: computeFreshMatch,
+    });
+
+    logServerSpan({
+      traceId: parsed.data.traceId,
+      span: "shop.retrieve_and_rank",
+      provider: `mcp.shop.com+${coreResult.diagnostics.decisionModel}`,
+      status:
+        coreResult.diagnostics.shopLive && coreResult.diagnostics.decisionsLive
+          ? "ok"
+          : "fallback",
+      durationMs: Date.now() - reqStartedAt,
+      cacheHit,
+      meta: {
+        itemId: item.itemId,
+        candidateCount: coreResult.rankedCandidates.length,
+        evidenceMode: coreResult.diagnostics.evidenceMode,
+      },
     });
 
     // Always mint fresh HMAC-signed `offerToken`s bound to the active `item.itemId`

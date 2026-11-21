@@ -27,6 +27,7 @@ import {
   evaluateVariantFreshness,
   formatMoneyMinor,
 } from "@/lib/shop/freshness";
+import { formatServerSpanRecord } from "@/lib/telemetry/logger";
 import type { TracedItem } from "@/lib/types";
 import { normalizeRawExtractionPayload } from "@/lib/video/extract";
 import {
@@ -647,5 +648,27 @@ describe("Two-layer server cache & in-flight deduplication", () => {
     expect(r4.cacheHit).toBe(false);
     expect(r4.value.count).toBe(2);
     expect(invocations).toBe(2);
+  });
+});
+
+describe("Structured server span telemetry", () => {
+  it("formats secret-free JSON span records with traceId and AI Studio correlationId", () => {
+    const record = formatServerSpanRecord({
+      traceId: "trc_demo123",
+      span: "video.extract",
+      provider: "gemini-4-neon",
+      status: "ok",
+      durationMs: 4120,
+      cacheHit: false,
+      correlationId: "int_abc987",
+      meta: { videoId: "dQw4w9WgXcQ", itemCount: 2 },
+    });
+
+    expect(record.service).toBe("scenetrace");
+    expect(record.traceId).toBe("trc_demo123");
+    expect(record.span).toBe("video.extract");
+    expect(record.correlationId).toBe("int_abc987");
+    expect(record.meta?.itemCount).toBe(2);
+    expect(typeof record.timestamp).toBe("string");
   });
 });

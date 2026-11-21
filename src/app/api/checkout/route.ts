@@ -11,12 +11,14 @@ import {
   refreshVariantWithGetProduct,
 } from "@/lib/shop/client";
 import { evaluateVariantFreshness } from "@/lib/shop/freshness";
+import { logServerSpan } from "@/lib/telemetry/logger";
 import type { CheckoutPriceChange, CheckoutSummary } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const CreateCheckoutRequestSchema = z.object({
+  traceId: z.string().max(120).optional(),
   offerToken: z.string().min(20).max(8192),
   idempotencyKey: z.string().uuid(),
   country: z.string().length(2).optional(),
@@ -127,11 +129,25 @@ export async function POST(request: Request) {
       );
     }
 
+    const chkStartedAt = Date.now();
     const providerCheckout = await createShopifyHostedCheckout({
       sellerDomain: freshVariant.sellerDomain,
       variantId: freshVariant.variantId,
       country,
       idempotencyKey: parsed.data.idempotencyKey,
+    });
+
+    logServerSpan({
+      traceId: parsed.data.traceId ?? "trace_checkout",
+      span: "shop.create_checkout",
+      provider: "mcp.shop.com",
+      status: "ok",
+      durationMs: Date.now() - chkStartedAt,
+      cacheHit: false,
+      meta: {
+        sellerDomain: freshVariant.sellerDomain,
+        checkoutStatus: providerCheckout.status,
+      },
     });
 
     const combinedWarnings = Array.from(

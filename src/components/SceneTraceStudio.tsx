@@ -24,6 +24,13 @@ import {
   writeClientTraceCache,
 } from "@/lib/cache/client-cache";
 import type { AllowedVideoModel } from "@/lib/env";
+import {
+  appendCheckoutEventToTrace,
+  readStoredTraceHistory,
+  upsertStoredTraceRecord,
+  type StoredTraceRecord,
+  type TraceWaterfallSpan,
+} from "@/lib/telemetry/trace-history";
 import type {
   CheckoutPriceChange,
   CheckoutSummary,
@@ -121,6 +128,7 @@ export function SceneTraceStudio({
   const [matchDiagnosticsByItem, setMatchDiagnosticsByItem] = useState<
     Record<string, ItemMatchDiagnostics>
   >({});
+  const [traceHistory, setTraceHistory] = useState<StoredTraceRecord[]>([]);
 
   // Modals & Drawers
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -144,6 +152,7 @@ export function SceneTraceStudio({
 
   useEffect(() => {
     setDarkMode(document.documentElement.classList.contains("dark"));
+    setTraceHistory(readStoredTraceHistory());
     try {
       const stored = sessionStorage.getItem("scenetrace-active-checkout");
       if (stored) {
@@ -410,6 +419,7 @@ export function SceneTraceStudio({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            traceId: traceId ?? undefined,
             question: baseQuestion,
             followUpPrompt,
             previousInteractionId,
@@ -713,6 +723,124 @@ export function SceneTraceStudio({
           : "Trace complete — offers ranked by Gemini Decisions.",
       );
 
+      const traceTotalMs =
+        extractJson.diagnostics.durationMs +
+        Math.max(
+          0,
+          ...Object.values(collectedAgentReports).map((r) => r.durationMs),
+        ) +
+        Math.max(
+          0,
+          ...Object.values(collectedDiags).map(
+            (d) => d.shopDurationMs + d.decisionsDurationMs,
+          ),
+        );
+
+      const spans: TraceWaterfallSpan[] = [];
+      let cursor = 0;
+      const extSpanDur = extractJson.diagnostics.cacheHit
+        ? 12
+        : extractJson.diagnostics.durationMs;
+      spans.push({
+        spanId: "sp_extract",
+        name: "video.extract",
+        service: extractJson.diagnostics.videoModel,
+        startOffsetMs: 0,
+        durationMs: Math.max(12, extSpanDur),
+        status: extractJson.diagnostics.cacheHit ? "cached" : "ok",
+        detail: `${workingItems.length} item(s) extracted`,
+        correlationId: extractJson.diagnostics.interactionId ?? null,
+      });
+      cursor += Math.max(12, extSpanDur);
+
+      if (Object.keys(capturedFramesMap).length > 0) {
+        spans.push({
+          spanId: "sp_frames",
+          name: "frames.capture",
+          service: "Browser HTML5 Canvas",
+          startOffsetMs: cursor,
+          durationMs: 180,
+          status: "ok",
+          detail: `${Object.values(capturedFramesMap).reduce((a, l) => a + l.length, 0)} frame/crop still(s)`,
+        });
+        cursor += 180;
+      }
+
+      const agentList = Object.values(collectedAgentReports);
+      if (agentList.length > 0) {
+        const agDur = agentList.every((r) => r.cacheHit)
+          ? 12
+          : Math.max(...agentList.map((r) => r.durationMs), 20);
+        spans.push({
+          spanId: "sp_agent",
+          name: "agent.investigate",
+          service: agentList[0].agentId,
+          startOffsetMs: cursor,
+          durationMs: agDur,
+          status: agentList.every((r) => r.cacheHit) ? "cached" : "ok",
+          detail: `${agentList.reduce((a, r) => a + r.steps.length, 0)} remote sandbox tool step(s)`,
+          correlationId:
+            agentList[0].environmentId ?? agentList[0].interactionId,
+        });
+        cursor += agDur;
+      }
+
+      const diagList = Object.values(collectedDiags);
+      if (diagList.length > 0) {
+        const matchCached = diagList.every((d) => d.cacheHit);
+        const shopDur = matchCached
+          ? 10
+          : Math.max(...diagList.map((d) => d.shopDurationMs), 20);
+        const decDur = matchCached
+          ? 10
+          : Math.max(...diagList.map((d) => d.decisionsDurationMs), 20);
+
+        spans.push({
+          spanId: "sp_shop",
+          name: "shop.retrieve",
+          service: "mcp.shop.com (2026-07-28)",
+          startOffsetMs: cursor,
+          durationMs: shopDur,
+          status: diagList.some((d) => d.shopError)
+            ? "error"
+            : matchCached
+              ? "cached"
+              : "ok",
+          detail: `${diagList.reduce((a, d) => a + d.candidateCount, 0)} verified variant(s)`,
+        });
+        cursor += shopDur;
+
+        spans.push({
+          spanId: "sp_decisions",
+          name: "decisions.rerank",
+          service: diagList[0].decisionModel,
+          startOffsetMs: cursor,
+          durationMs: decDur,
+          status: diagList.some((d) => !d.decisionsLive)
+            ? "warning"
+            : matchCached
+              ? "cached"
+              : "ok",
+          detail: `mode=${diagList[0].evidenceMode}`,
+        });
+      }
+
+      upsertStoredTraceRecord({
+        traceId: extractJson.traceId,
+        createdAt: new Date().toISOString(),
+        videoId: normalized.videoId,
+        canonicalUrl: normalized.canonicalUrl,
+        question: targetQuestion.trim(),
+        totalDurationMs: Math.max(100, traceTotalMs),
+        extractDiagnostics: extractJson.diagnostics,
+        items: workingItems,
+        agentReportsByItem: collectedAgentReports,
+        matchDiagnosticsByItem: collectedDiags,
+        spans,
+        checkoutEvents: [],
+      });
+      setTraceHistory(readStoredTraceHistory());
+
       if (!hadAnyError && !companionFile) {
         writeClientTraceCache({
           cacheKey: clientCacheKey,
@@ -765,6 +893,7 @@ export function SceneTraceStudio({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          traceId: traceId ?? undefined,
           offerToken: offer.offerToken,
           desiredOptions,
           originalSearchRank: offer.originalSearchRank,
@@ -902,6 +1031,7 @@ export function SceneTraceStudio({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          traceId: traceId ?? undefined,
           offerToken: params.offerToken,
           idempotencyKey,
           country: defaultCountry,
@@ -937,6 +1067,16 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      if (traceId) {
+        const updatedHist = appendCheckoutEventToTrace(traceId, {
+          at: new Date().toISOString(),
+          sellerName: data.checkout.sellerName,
+          title: data.checkout.title,
+          status: data.checkout.status,
+          orderPlaced: data.checkout.orderPlaced,
+        });
+        setTraceHistory(updatedHist);
+      }
       try {
         sessionStorage.setItem(
           "scenetrace-active-checkout",
@@ -966,7 +1106,10 @@ export function SceneTraceStudio({
     try {
       const res = await fetch(
         `/api/checkout/${encodeURIComponent(targetCheckout.checkoutRef)}`,
-        { method: "GET" },
+        {
+          method: "GET",
+          headers: traceId ? { "x-scenetrace-id": traceId } : undefined,
+        },
       );
 
       const data = (await res.json()) as {
@@ -983,6 +1126,16 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      if (traceId) {
+        const updatedHist = appendCheckoutEventToTrace(traceId, {
+          at: new Date().toISOString(),
+          sellerName: data.checkout.sellerName,
+          title: data.checkout.title,
+          status: data.checkout.status,
+          orderPlaced: data.checkout.orderPlaced,
+        });
+        setTraceHistory(updatedHist);
+      }
       try {
         sessionStorage.setItem(
           "scenetrace-active-checkout",
@@ -1049,7 +1202,9 @@ export function SceneTraceStudio({
         }}
         onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         promotedTopCount={promotedTopCount}
-        hasTraceResults={Boolean(extractDiagnostics)}
+        hasTraceResults={
+          Boolean(extractDiagnostics) || traceHistory.length > 0
+        }
         darkMode={darkMode}
         onToggleTheme={toggleTheme}
         country={defaultCountry}
@@ -1439,6 +1594,7 @@ export function SceneTraceStudio({
         items={items}
         agentReportsByItem={agentReportsByItem}
         matchDiagnosticsByItem={matchDiagnosticsByItem}
+        traceHistory={traceHistory}
       />
     </div>
   );

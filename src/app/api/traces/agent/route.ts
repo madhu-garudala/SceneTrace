@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runManagedAgentInvestigation } from "@/lib/agent/managed-agent";
 import { buildCacheKey, withServerCache } from "@/lib/cache/store";
+import { logServerSpan } from "@/lib/telemetry/logger";
 import type { EvidenceFrame, TracedItem } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -11,6 +12,7 @@ export const maxDuration = 120;
 const AGENT_CACHE_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
 
 const AgentRequestSchema = z.object({
+  traceId: z.string().max(120).optional(),
   question: z.string().min(1).max(500),
   followUpPrompt: z.string().max(400).optional(),
   previousInteractionId: z.string().max(240).nullable().optional(),
@@ -111,6 +113,7 @@ export async function POST(request: Request) {
       frameDigest,
     });
 
+    const reqStartedAt = Date.now();
     const { value: cachedOrFresh, cacheHit } = await withServerCache({
       key: cacheKey,
       ttlMs: AGENT_CACHE_TTL_MS,
@@ -123,6 +126,20 @@ export async function POST(request: Request) {
           previousInteractionId: parsed.data.previousInteractionId,
           primaryFrame,
         }),
+    });
+
+    logServerSpan({
+      traceId: parsed.data.traceId ?? "trace_standalone",
+      span: "agent.investigate",
+      provider: cachedOrFresh.report.agentId,
+      status: "ok",
+      durationMs: Date.now() - reqStartedAt,
+      cacheHit,
+      correlationId: cachedOrFresh.report.interactionId,
+      meta: {
+        sandboxEnv: cachedOrFresh.report.environmentId,
+        stepCount: cachedOrFresh.report.steps.length,
+      },
     });
 
     return NextResponse.json(

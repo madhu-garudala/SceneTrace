@@ -481,8 +481,11 @@ export async function extractItemsFromYouTube(params: {
     }
 
     const usage = envelope.usage as { total_tokens?: number } | undefined;
+    const interactionId =
+      typeof envelope.id === "string" ? envelope.id : null;
     return {
       ...normalized,
+      interactionId,
       totalTokens:
         typeof usage?.total_tokens === "number" ? usage.total_tokens : null,
     };
@@ -510,6 +513,7 @@ export async function extractItemsFromYouTube(params: {
     items: result.items,
     diagnostics: {
       videoModel: model,
+      interactionId: result.interactionId,
       geminiLive: true,
       durationMs: Date.now() - startedAt,
       videoSummary: result.videoSummary,

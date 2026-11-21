@@ -170,6 +170,7 @@ export type ItemMatchDiagnostics = {
 
 export type ExtractDiagnostics = {
   videoModel: string;
+  interactionId?: string | null;
   geminiLive: boolean;
   cacheHit?: boolean;
   durationMs: number;
