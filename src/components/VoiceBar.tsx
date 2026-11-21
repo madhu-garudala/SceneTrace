@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, AudioLines, Mic, MicOff, Volume2 } from "lucide-react";
 import type { VoiceContext, VoiceIntent, VoiceIntentResponse, VoiceSlots } from "@/lib/voice/types";
 import { useSpeak, useSpeechRecognition } from "@/lib/voice/useSpeech";
@@ -27,11 +28,40 @@ const INTENT_LABELS: Record<VoiceIntent, string> = {
   unknown: "Unknown",
 };
 
+/**
+ * What to say next, given where the shopper is. Shown while voice is on so a
+ * first-time user (or a demo audience) sees the vocabulary; tapping a prompt
+ * runs it through the same intent route as speech.
+ */
+export function suggestedPrompts(ctx: VoiceContext): string[] {
+  if (ctx.busy) return ["Stop", "Show me the evidence"];
+  if (ctx.hasItems && ctx.hasOffers) {
+    return [
+      "Add it to my cart",
+      "Show me something under $100",
+      "The second one",
+      "This one is broken, is it worth fixing?",
+      "Next item",
+    ];
+  }
+  if (ctx.hasItems) return ["Is it worth fixing?", "Show me the evidence", "Next item"];
+  if (ctx.source === "camera") {
+    return ctx.hasCapture
+      ? ["What is this?", "Take another picture", "Switch to YouTube"]
+      : ["What is this?", "What headphones are these?", "Switch to YouTube"];
+  }
+  return ["Switch to camera", "Find the watch in this video"];
+}
+
 const LOOP_COUNT = 3;
 const LOOP_WINDOW_MS = 10_000;
 
 export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
   const [enabled, setEnabled] = useState(false);
+  // The navbar's backdrop blur makes it the containing block for fixed
+  // children, so the prompt strip is portalled to <body> to sit at the bottom.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const [last, setLast] = useState<{ intent: VoiceIntent; confidence: number } | null>(null);
   const { speak, stop, speaking } = useSpeak();
   const echo = useRef(createEchoGuard());
@@ -144,6 +174,29 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
           }`}
         />
       </button>
+
+      {mounted && enabled && !error && createPortal(
+        <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-[calc(env(safe-area-inset-bottom,0px)+16px)]">
+          <div className="pointer-events-auto flex max-w-full flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-[var(--border-subtle)] bg-[var(--bg-panel)]/95 px-3 py-2 shadow-lg backdrop-blur">
+            <span className="flex items-center gap-1 pr-1 text-[11px] font-medium text-[var(--ink-muted)]">
+              <Mic className="h-3 w-3" />
+              Try saying
+            </span>
+            {suggestedPrompts(context).map((prompt) => (
+              <button
+                key={prompt}
+                type="button"
+                onClick={() => void handleResult(prompt)}
+                title="Tap to run it as if you'd said it"
+                className="rounded-full border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2.5 py-1 text-[11px] text-[var(--ink-secondary)] transition-colors hover:border-amber-500/40 hover:text-[var(--ink-primary)]"
+              >
+                “{prompt}”
+              </button>
+            ))}
+          </div>
+        </div>,
+        document.body,
+      )}
 
       {interim && (
         <span className="hidden max-w-[16rem] truncate text-xs italic text-[var(--ink-secondary)] md:inline">

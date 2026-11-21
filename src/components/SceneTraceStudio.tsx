@@ -12,6 +12,7 @@ import {
   SlidersHorizontal,
   Zap,
 } from "lucide-react";
+import { BagDrawer } from "@/components/BagDrawer";
 import { CheckoutModal } from "@/components/CheckoutModal";
 import { DiagnosticsDrawer } from "@/components/DiagnosticsDrawer";
 import { HomeStage, type TraceInputSource } from "@/components/HomeStage";
@@ -153,6 +154,31 @@ export function SceneTraceStudio({
   const [modalCheckout, setModalCheckout] = useState<CheckoutSummary | null>(
     null,
   );
+  // Every checkout created this session, newest first (one per merchant offer).
+  const [bag, setBag] = useState<CheckoutSummary[]>([]);
+  const [bagOpen, setBagOpen] = useState(false);
+  const putInBag = useCallback((c: CheckoutSummary) => {
+    setBag((prev) => {
+      const next = [c, ...prev.filter((x) => x.checkoutRef !== c.checkoutRef)];
+      try {
+        sessionStorage.setItem("scenetrace-bag", JSON.stringify(next));
+      } catch {
+        // ignore storage quota
+      }
+      return next;
+    });
+  }, []);
+  const removeFromBag = useCallback((ref: string) => {
+    setBag((prev) => {
+      const next = prev.filter((x) => x.checkoutRef !== ref);
+      try {
+        sessionStorage.setItem("scenetrace-bag", JSON.stringify(next));
+      } catch {
+        // ignore storage quota
+      }
+      return next;
+    });
+  }, []);
   const [savedCheckout, setSavedCheckout] = useState<CheckoutSummary | null>(
     null,
   );
@@ -173,6 +199,13 @@ export function SceneTraceStudio({
         const parsed = JSON.parse(stored) as CheckoutSummary;
         if (parsed?.checkoutRef && parsed?.continueUrl) {
           setSavedCheckout(parsed);
+        }
+      }
+      const storedBag = sessionStorage.getItem("scenetrace-bag");
+      if (storedBag) {
+        const parsedBag = JSON.parse(storedBag) as CheckoutSummary[];
+        if (Array.isArray(parsedBag)) {
+          setBag(parsedBag.filter((c) => c?.checkoutRef && c?.continueUrl));
         }
       }
     } catch {
@@ -728,32 +761,23 @@ export function SceneTraceStudio({
       let workingItems = [...extractJson.items];
       const collectedAgentReports: Record<string, ManagedAgentReport> = {};
 
-      if (managedAgentEnabled) {
-        setStage("agent_investigating");
-        setStageAnnouncement(
-          "Researching SKUs and price benchmarks in Managed Agent sandbox…",
-        );
-
-        const enriched = await Promise.all(
-          workingItems.map((it) =>
-            runAgentForItem({
-              targetItem: it,
-              baseQuestion: targetQuestion.trim(),
-              primaryFrame: capturedFramesMap[it.itemId]?.[0] ?? null,
-              bypassCache,
-              reRunMatchAfter: false,
-            }),
-          ),
-        );
-        if (runId !== activeRunIdRef.current) return;
-        workingItems = enriched.map((e) => {
-          if (e.report) {
-            collectedAgentReports[e.updatedItem.itemId] = e.report;
-            if (e.report.cacheHit) anyStageHitCache = true;
-          }
-          return e.updatedItem;
-        });
-      }
+      // The managed agent researches SKUs while the catalog search runs on the
+      // extracted items, so offers show up without waiting on the sandbox.
+      // When the agent's findings change what we'd search for, that item is
+      // matched again below; otherwise its first offers stand.
+      const agentRun = managedAgentEnabled
+        ? Promise.all(
+            workingItems.map((it) =>
+              runAgentForItem({
+                targetItem: it,
+                baseQuestion: targetQuestion.trim(),
+                primaryFrame: capturedFramesMap[it.itemId]?.[0] ?? null,
+                bypassCache,
+                reRunMatchAfter: false,
+              }),
+            ),
+          )
+        : null;
 
       setStage("matching");
       setStageAnnouncement(
@@ -789,6 +813,52 @@ export function SceneTraceStudio({
 
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
+
+      if (agentRun) {
+        setStage("agent_investigating");
+        setStageAnnouncement(
+          "Offers ready. Managed Agent is still checking SKUs and price benchmarks…",
+        );
+        const enriched = await agentRun;
+        if (runId !== activeRunIdRef.current) return;
+        const searchKey = (it: TracedItem) =>
+          JSON.stringify([it.brand, it.modelReference, it.searchQueries]);
+        const before = new Map(workingItems.map((it) => [it.itemId, searchKey(it)]));
+        workingItems = enriched.map((e) => {
+          if (e.report) {
+            collectedAgentReports[e.updatedItem.itemId] = e.report;
+            if (e.report.cacheHit) anyStageHitCache = true;
+          }
+          return e.updatedItem;
+        });
+        const changed = workingItems.filter(
+          (it) => before.get(it.itemId) !== searchKey(it),
+        );
+        if (changed.length > 0) {
+          setStage("matching");
+          setStageAnnouncement("Re-ranking offers with the agent's SKU findings…");
+          await Promise.all(
+            changed.map(async (it) => {
+              const matchOut = await matchSingleItem({
+                activeTraceId: extractJson.traceId,
+                targetItem: it,
+                itemFrames: capturedFramesMap[it.itemId] ?? [],
+                bypassCache,
+                runId,
+              });
+              // Keep the first offers if the second pass comes back empty.
+              if (matchOut.offers.length > 0) {
+                collectedOffers[it.itemId] = matchOut.offers;
+                if (matchOut.diagnostics) collectedDiags[it.itemId] = matchOut.diagnostics;
+              } else if (collectedOffers[it.itemId]?.length) {
+                setOffersByItem((prev) => ({ ...prev, [it.itemId]: collectedOffers[it.itemId] }));
+              }
+              if (matchOut.cacheHit) anyStageHitCache = true;
+            }),
+          );
+          if (runId !== activeRunIdRef.current) return;
+        }
+      }
 
       setServedFromCache(anyStageHitCache);
       setStage(hadAnyError ? "partial" : "complete");
@@ -1142,6 +1212,7 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      putInBag(data.checkout);
       if (traceId) {
         const updatedHist = appendCheckoutEventToTrace(traceId, {
           at: new Date().toISOString(),
@@ -1201,6 +1272,7 @@ export function SceneTraceStudio({
 
       setModalCheckout(data.checkout);
       setSavedCheckout(data.checkout);
+      putInBag(data.checkout);
       if (traceId) {
         const updatedHist = appendCheckoutEventToTrace(traceId, {
           at: new Date().toISOString(),
@@ -1477,13 +1549,8 @@ export function SceneTraceStudio({
         managedAgentEnabled={managedAgentEnabled}
         onToggleManagedAgent={() => setManagedAgentEnabled((v) => !v)}
         savedCheckout={savedCheckout}
-        onOpenSavedCheckout={() => {
-          if (!savedCheckout) return;
-          setCheckoutError(null);
-          setPriceChangePrompt(null);
-          setModalCheckout(savedCheckout);
-          setCheckoutModalOpen(true);
-        }}
+        bagCount={bag.length}
+        onOpenSavedCheckout={() => setBagOpen(true)}
         onOpenDiagnostics={() => setDiagnosticsOpen(true)}
         promotedTopCount={promotedTopCount}
         hasTraceResults={
@@ -1924,6 +1991,21 @@ export function SceneTraceStudio({
           </section>
         </main>
       )}
+
+      <BagDrawer
+        open={bagOpen}
+        onClose={() => setBagOpen(false)}
+        bag={bag}
+        onRemove={removeFromBag}
+        onOpenCheckout={(c) => {
+          setBagOpen(false);
+          setCheckoutError(null);
+          setPriceChangePrompt(null);
+          setSavedCheckout(c);
+          setModalCheckout(c);
+          setCheckoutModalOpen(true);
+        }}
+      />
 
       <CheckoutModal
         open={checkoutModalOpen}

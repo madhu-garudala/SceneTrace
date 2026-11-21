@@ -40,6 +40,8 @@ export type StudioNavbarProps = {
   managedAgentEnabled: boolean;
   onToggleManagedAgent: () => void;
   savedCheckout: CheckoutSummary | null;
+  /** Items added this session; the bag pill shows whenever there are any. */
+  bagCount?: number;
   onOpenSavedCheckout: () => void;
   onOpenDiagnostics: () => void;
   promotedTopCount: number;
@@ -61,6 +63,7 @@ export function StudioNavbar({
   managedAgentEnabled,
   onToggleManagedAgent,
   savedCheckout,
+  bagCount = 0,
   onOpenSavedCheckout,
   onOpenDiagnostics,
   promotedTopCount,
@@ -239,7 +242,7 @@ export function StudioNavbar({
           </div>
 
           {/* Saved Checkout Bag Pill */}
-          {savedCheckout && (
+          {(savedCheckout || bagCount > 0) && (
             <button
               type="button"
               onClick={onOpenSavedCheckout}
@@ -247,8 +250,13 @@ export function StudioNavbar({
             >
               <ShoppingBag className="h-3.5 w-3.5" />
               <span className="hidden sm:inline">
-                {savedCheckout.orderPlaced ? "Order Placed" : "Bag"}
+                {savedCheckout?.orderPlaced && bagCount <= 1 ? "Order Placed" : "Bag"}
               </span>
+              {bagCount > 0 && (
+                <span className="rounded-full bg-emerald-500/20 px-1.5 font-[family-name:var(--font-mono)] text-[10px] font-semibold">
+                  {bagCount}
+                </span>
+              )}
             </button>
           )}
 
