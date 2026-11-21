@@ -9,9 +9,9 @@ export type VoiceActions = {
   switchSource: (source: "camera" | "youtube") => void;
   capture: () => void | Promise<void>;
   /** Run a trace. With no question, re-run on whatever is in view. */
-  trace: (question?: string) => void | Promise<void>;
+  trace: (question?: string, heard?: string) => void | Promise<void>;
   /** Narrow the search — budget, colour, size. */
-  refine: (refinement: { maxPrice?: number; color?: string; size?: string }) => void | Promise<void>;
+  refine: (refinement: { maxPrice?: number; color?: string; size?: string; text?: string }) => string | void | Promise<string | void>;
   /** May return what to say back (e.g. "This one? ..."). */
   selectOffer: (selection: { index?: number; description?: string }) => string | void;
   /** Buy. Buying is the default path; it never waits on a diagnosis. */
@@ -50,9 +50,9 @@ export async function dispatchVoiceIntent(
     case "capture":
       return actions.capture();
     case "trace":
-      return actions.trace(slots.question);
+      return actions.trace(slots.question, slots.heard);
     case "refine":
-      return actions.refine({ maxPrice: slots.maxPrice, color: slots.color, size: slots.size });
+      return actions.refine({ maxPrice: slots.maxPrice, color: slots.color, size: slots.size, text: slots.description ?? slots.question });
     case "select_offer":
       return actions.selectOffer({ index: slots.index, description: slots.description });
     case "checkout":

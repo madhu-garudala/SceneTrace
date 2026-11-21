@@ -1335,7 +1335,7 @@ export function SceneTraceStudio({
   const pendingVoiceTraceRef = useRef<string | null>(null);
   const [selectedOfferIdx, setSelectedOfferIdx] = useState(0);
   // The offer voice is about to add, waiting on "yes" / "no, the other one".
-  const [pendingOffer, setPendingOffer] = useState<{ itemId: string; offerId: string } | null>(null);
+  const [pendingOffer, setPendingOffer] = useState<{ itemId: string; offerId: string; snapshot: Offer } | null>(null);
   const [repairState, setRepairState] = useState<{
     itemId: string;
     label: string;
@@ -1381,7 +1381,7 @@ export function SceneTraceStudio({
   };
   const askToAdd = (o: Offer, lead = "Add") => {
     if (!activeItem) return;
-    setPendingOffer({ itemId: activeItem.itemId, offerId: o.offerId });
+    setPendingOffer({ itemId: activeItem.itemId, offerId: o.offerId, snapshot: o });
     return `${lead} ${speakableTitle(o)} from ${o.sellerName}?`;
   };
   /**
@@ -1441,12 +1441,42 @@ export function SceneTraceStudio({
   };
   const pendingOfferObj =
     pendingOffer && activeItem && pendingOffer.itemId === activeItem.itemId
-      ? activeOffers.find((o) => o.offerId === pendingOffer.offerId) ?? null
+      ? // The agent's re-rank replaces the offer list; keep the same product marked.
+        activeOffers.find((o) => o.offerId === pendingOffer.offerId) ??
+        activeOffers.find(
+          (o) =>
+            o.productId === pendingOffer.snapshot.productId &&
+            o.variantId === pendingOffer.snapshot.variantId,
+        ) ??
+        pendingOffer.snapshot
       : null;
 
   /** A description of one of the listed offers, answered without a server round trip. */
+  const ordinalIndex = (text: string): number => {
+    const t = text.toLowerCase();
+    const n = activeOffers.length;
+    if (/\b(second|2nd) (to )?last\b/.test(t)) return n - 2;
+    if (/\b(third|3rd) (to )?last\b/.test(t)) return n - 3;
+    if (/\blast\b/.test(t)) return n - 1;
+    const words: Record<string, number> = { first: 0, "1st": 0, top: 0, second: 1, "2nd": 1, third: 2, "3rd": 2, fourth: 3, "4th": 3, fifth: 4, "5th": 4, sixth: 5, "6th": 5 };
+    for (const [w, i] of Object.entries(words)) if (new RegExp(`\\b${w}\\b`).test(t)) return i;
+    const more: Record<string, number> = { seventh: 6, "7th": 6, eighth: 7, "8th": 7, ninth: 8, "9th": 8, tenth: 9, "10th": 9 };
+    for (const [w, i] of Object.entries(more)) if (new RegExp(`\\b${w}\\b`).test(t)) return i;
+    const NUM: Record<string, number> = { one: 1, two: 2, to: 2, too: 2, three: 3, four: 4, for: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+    const num = /\b(?:number|no\.?|#|option|offer)\s*(\d{1,2}|one|two|to|too|three|four|for|five|six|seven|eight|nine|ten)\b/.exec(t);
+    if (num) return (NUM[num[1]] ?? Number(num[1])) - 1;
+    // A bare digit said on its own ("5", "5 please").
+    const bare = /^\s*(?:the\s+)?(\d{1,2})\s*(?:one|please)?\s*$/.exec(t);
+    if (bare) return Number(bare[1]) - 1;
+    return -1;
+  };
+
   const handleVoiceDescribe = (utterance: string): string | null => {
     let idx = findOfferByWords(utterance);
+    if (idx < 0) {
+      const o = ordinalIndex(utterance);
+      if (o >= 0 && o < activeOffers.length) idx = o;
+    }
     if (idx < 0 && /\bcheap(er|est)?\b|\blowest price\b|\bless expensive\b/i.test(utterance)) {
       // Cheapest in the same currency as the top offer; cross-currency prices don't compare.
       const cur = activeOffers[0]?.currency;
@@ -1563,7 +1593,48 @@ export function SceneTraceStudio({
       setCompanionFile(null);
       setCaptureRequested(true);
     },
-    trace: (spoken) => {
+    trace: (spoken, heard) => {
+      // Follow-up text searches ("search for monk fruit Red Bull") build on what
+      // is already found: a new result card next to the others, searched in
+      // Shopify directly (~10 s), no new photo and nothing thrown away.
+      const said = heard ?? spoken ?? "";
+      if (
+        said &&
+        items.length > 0 &&
+        traceId &&
+        /\b(search|look(?:ing)? for|find|look up|show me|get me)\b/i.test(said) &&
+        !/\b(camera|picture|photo|look at)\b/i.test(said)
+      ) {
+        const query = said
+          .replace(/[?.!,]/g, " ")
+          .replace(/\b(can|could|would|you|please|search|searching|for|look|looking|find|up|show|get|me|some|a|an|the|also|now|then|and|i|want|to|it|let's|lets)\b/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (query.length >= 3) {
+          const parent = activeItem ?? items[0];
+          const label = query.replace(/\b\w/g, (c) => c.toUpperCase());
+          const followUp: TracedItem = {
+            ...parent,
+            itemId: `${parent.itemId}-q${Date.now().toString(36)}`,
+            label,
+            summary: `You asked for ${query}.`,
+            features: [],
+            modelReference: null,
+            condition: undefined,
+            searchQueries: [query, parent.brand && !query.toLowerCase().includes(parent.brand.toLowerCase()) ? `${parent.brand} ${query}` : `${query} ${parent.category}`],
+          };
+          setItems((prev) => [followUp, ...prev]);
+          setActiveItemId(followUp.itemId);
+          setPendingOffer(null);
+          void matchSingleItem({
+            activeTraceId: traceId,
+            targetItem: followUp,
+            itemFrames: [],
+            bypassCache: true,
+          });
+          return;
+        }
+      }
       const q = spoken?.trim() || question.trim() || DEFAULT_VOICE_QUESTION;
       if (inputSource === "camera") {
         // On the home screen with a still already taken, trace that still.
@@ -1581,13 +1652,36 @@ export function SceneTraceStudio({
       setQuestion(q);
       return handleTrace({ question: q });
     },
-    refine: (r) => {
-      const phrase = refinementPhrase(r);
-      if (!phrase) return;
-      const base = question.trim() || DEFAULT_VOICE_QUESTION;
-      const q = `${base}, ${phrase}`;
-      setQuestion(q);
-      return handleTrace({ question: q, bypassCache: true });
+    refine: async (r) => {
+      // "Is there a sugar-free version?" may already be on screen.
+      const local = r.text ? handleVoiceDescribe(r.text) : null;
+      if (local) return local;
+      const FILLER = /\b(is|are|there|actually|a|an|any|the|version|versions|of|on|in|this|that|it|do|does|you|have|can|could|find|show|me|i|want|get|one|ones|instead|please|maybe|something|like|looking|for|some)\b/gi;
+      const freeText = (r.text ?? "").replace(/[?.!,]/g, " ").replace(FILLER, " ").replace(/\s+/g, " ").trim();
+      const phrase = [refinementPhrase(r), freeText].filter(Boolean).join(", ");
+      if (!phrase) return "What should I change?";
+      const target = activeItem;
+      if (!target || !traceId) {
+        const q = `${question.trim() || DEFAULT_VOICE_QUESTION}, ${phrase}`;
+        setQuestion(q);
+        void handleTrace({ question: q, bypassCache: true });
+        return "Searching again.";
+      }
+      // Same item, new terms: re-run only the Shopify search (~10 s), not the photo.
+      const base = [target.brand, target.modelReference || target.label].filter(Boolean).join(" ");
+      const refined: TracedItem = {
+        ...target,
+        searchQueries: [`${base} ${phrase}`, `${target.label} ${phrase}`, ...target.searchQueries.slice(0, 2).map((q) => `${q} ${phrase}`)],
+      };
+      setItems((prev) => prev.map((it) => (it.itemId === target.itemId ? refined : it)));
+      setPendingOffer(null);
+      void matchSingleItem({
+        activeTraceId: traceId,
+        targetItem: refined,
+        itemFrames: framesByItem[target.itemId] ?? [],
+        bypassCache: true,
+      });
+      return `Looking for ${phrase}.`;
     },
     selectOffer: ({ index, description }) => {
       if (!activeOffers.length) return;

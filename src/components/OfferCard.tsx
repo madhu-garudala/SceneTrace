@@ -114,6 +114,15 @@ export function OfferCard({
           className="relative h-28 w-28 shrink-0 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-white"
           title="Open merchant product page"
         >
+          {/* Spoken handle: "the fifth one" / "number 5" picks this offer. */}
+          <span
+            aria-label={`Offer ${rankIndex + 1}`}
+            className={`absolute left-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full text-sm font-bold tabular-nums shadow ${
+              highlighted ? "bg-amber-400 text-neutral-950" : "bg-neutral-950/85 text-white"
+            }`}
+          >
+            {rankIndex + 1}
+          </span>
           {offer.imageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img

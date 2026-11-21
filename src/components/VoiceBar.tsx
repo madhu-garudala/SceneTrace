@@ -71,7 +71,7 @@ const LOOP_WINDOW_MS = 10_000;
 const YES_RE = /^\s*(yes|yeah|yep|yup|sure|correct|right|perfect|do it|go ahead|add it|that one|sounds good|ok(?:ay)?)\b/i;
 const NO_RE = /^\s*(?:no|nope|nah|not (?:that|this)(?: one)?|wrong one|actually)\b[\s,.!]*(.*)$/i;
 
-const DESCRIBE_CUE_RE = /\b(one|from|version|instead|seller|store|shop|renewed|refurbished|cheaper|cheapest|other)\b/i;
+const DESCRIBE_CUE_RE = /\b(one|from|version|instead|seller|store|shop|renewed|refurbished|cheaper|cheapest|other|first|second|third|fourth|fifth|sixth|last|number|option|\d+(?:st|nd|rd|th)?)\b/i;
 
 export function VoiceBar({ context, onIntent, onConfirm, onDescribe, disabled }: VoiceBarProps) {
   const [enabled, setEnabled] = useState(false);
@@ -170,13 +170,17 @@ export function VoiceBar({ context, onIntent, onConfirm, onDescribe, disabled }:
 
       // Picking and buying answer with what was actually picked, so the app
       // acts first and then says which one; everything else replies at once.
-      if (data.intent === "select_offer" || data.intent === "checkout") {
-        const answer = await onIntentRef.current(data.intent, data.slots ?? {});
+      if (data.intent === "select_offer" || data.intent === "checkout" || data.intent === "refine") {
+        const slots =
+          data.intent === "refine"
+            ? { ...data.slots, question: data.slots?.question ?? data.slots?.description ?? data.heard }
+            : data.slots ?? {};
+        const answer = await onIntentRef.current(data.intent, slots);
         if (!looping) say(answer || data.reply);
         return;
       }
       if (data.reply && !looping) say(data.reply);
-      await onIntentRef.current(data.intent, data.slots ?? {});
+      await onIntentRef.current(data.intent, { ...data.slots, heard: data.heard || utterance });
     },
     [speak, stop],
   );

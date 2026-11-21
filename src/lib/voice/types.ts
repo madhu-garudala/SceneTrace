@@ -36,6 +36,8 @@ export const VOICE_INTENTS: readonly VoiceIntent[] = [
 ] as const;
 
 export type VoiceSlots = {
+  /** The whole utterance as heard, for actions that read intent from wording. */
+  heard?: string;
   question?: string;
   maxPrice?: number;
   color?: string;
