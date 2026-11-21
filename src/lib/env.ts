@@ -4,6 +4,7 @@ import crypto from "node:crypto";
  * Only models smoke-verified on this project's API key are exposed.
  */
 export const ALLOWED_VIDEO_MODELS = [
+  "gemini-4-hydrogen",
   "gemini-4-neon",
   "gemini-4-carbon",
   "gemini-4-argon",
@@ -29,7 +30,7 @@ export function getDefaultVideoModel(): AllowedVideoModel {
   ) {
     return envModel as AllowedVideoModel;
   }
-  return "gemini-4-neon";
+  return "gemini-4-hydrogen";
 }
 
 export function resolveVideoModel(requested?: string | null): AllowedVideoModel {
