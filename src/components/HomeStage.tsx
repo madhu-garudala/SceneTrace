@@ -3,6 +3,7 @@
 import { useRef } from "react";
 import {
   ArrowRight,
+  Camera,
   CheckCircle2,
   Film,
   Link2,
@@ -12,7 +13,19 @@ import {
   Terminal,
   X,
 } from "lucide-react";
+import { CameraCapture } from "@/components/CameraCapture";
 import type { NormalizedYouTubeVideo } from "@/lib/video/youtube";
+
+export type TraceInputSource = "youtube" | "camera";
+
+const INPUT_SOURCES: {
+  id: TraceInputSource;
+  label: string;
+  icon: typeof Link2;
+}[] = [
+  { id: "youtube", label: "YouTube link", icon: Link2 },
+  { id: "camera", label: "Camera", icon: Camera },
+];
 
 export type ShowcaseScene = {
   id: string;
@@ -62,6 +75,8 @@ const QUICK_QUESTIONS = [
 ];
 
 export type HomeStageProps = {
+  inputSource: TraceInputSource;
+  onChangeInputSource: (source: TraceInputSource) => void;
   youtubeUrl: string;
   onChangeYoutubeUrl: (v: string) => void;
   question: string;
@@ -77,6 +92,8 @@ export type HomeStageProps = {
 };
 
 export function HomeStage({
+  inputSource,
+  onChangeInputSource,
   youtubeUrl,
   onChangeYoutubeUrl,
   question,
@@ -92,6 +109,10 @@ export function HomeStage({
 }: HomeStageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const isCamera = inputSource === "camera";
+  const hasSource = isCamera
+    ? Boolean(companionFile)
+    : Boolean(youtubeUrl.trim());
 
   return (
     <div className="ambient-stage min-h-[calc(100vh-4rem)]">
@@ -111,7 +132,8 @@ export function HomeStage({
           </h1>
 
           <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-[var(--ink-secondary)] sm:text-base">
-            Paste any public YouTube video or Short. SceneTrace tracks items
+            Paste any public YouTube video or Short, or snap a photo with your
+            camera. SceneTrace tracks items
             across cuts, verifies exact SKUs in a sandboxed agent, and ranks
             live Shopify offers you can buy immediately.
           </p>
@@ -125,54 +147,88 @@ export function HomeStage({
           }}
           className="surface-card mx-auto mt-9 max-w-3xl overflow-hidden rounded-3xl transition-all"
         >
-          {/* Row 1: YouTube URL Input */}
-          <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] px-5 py-4">
-            <Link2 className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
-            <input
-              type="url"
-              required
-              value={youtubeUrl}
-              onChange={(e) => onChangeYoutubeUrl(e.target.value)}
-              placeholder="Paste a YouTube video or Shorts link (https://youtube.com/watch?v=...)"
-              aria-label="Public YouTube URL"
-              className="w-full bg-transparent text-sm text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:outline-none"
-            />
-            {liveUrlPreview && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/12 px-2.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                <CheckCircle2 className="h-3 w-3" />
-                {liveUrlPreview.videoId}
-              </span>
-            )}
+          {/* Row 0: Source Choice */}
+          <div className="flex items-center gap-1.5 border-b border-[var(--border-subtle)] px-5 py-2.5">
+            {INPUT_SOURCES.map(({ id, label, icon: Icon }) => {
+              const selected = inputSource === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={selected}
+                  disabled={isRunning}
+                  onClick={() => onChangeInputSource(id)}
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors disabled:opacity-50 ${
+                    selected
+                      ? "border-amber-500/45 bg-amber-500/12 text-amber-700 dark:text-amber-300"
+                      : "border-[var(--border-subtle)] bg-[var(--bg-sunken)]/70 text-[var(--ink-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  <span>{label}</span>
+                </button>
+              );
+            })}
           </div>
 
-          {/* Instant Live Video Thumbnail Preview when valid URL is pasted */}
-          {liveUrlPreview && (
-            <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-sunken)]/65 px-5 py-2.5">
-              <div className="flex items-center gap-3 min-w-0">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={liveUrlPreview.thumbnailUrl}
-                  alt="YouTube clip preview"
-                  className="h-10 w-16 shrink-0 rounded-lg border border-[var(--border-subtle)] object-cover"
+          {isCamera ? (
+            <CameraCapture
+              capturedFile={companionFile}
+              onCapture={onChangeCompanionFile}
+              disabled={isRunning}
+            />
+          ) : (
+            <>
+              {/* Row 1: YouTube URL Input */}
+              <div className="flex items-center gap-3 border-b border-[var(--border-subtle)] px-5 py-4">
+                <Link2 className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                <input
+                  type="url"
+                  required
+                  value={youtubeUrl}
+                  onChange={(e) => onChangeYoutubeUrl(e.target.value)}
+                  placeholder="Paste a YouTube video or Shorts link (https://youtube.com/watch?v=...)"
+                  aria-label="Public YouTube URL"
+                  className="w-full bg-transparent text-sm text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:outline-none"
                 />
-                <div className="min-w-0">
-                  <div className="truncate text-xs font-medium text-[var(--ink-primary)]">
-                    Clip ready for scene analysis
-                  </div>
-                  <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                    {liveUrlPreview.canonicalUrl}
-                  </div>
-                </div>
+                {liveUrlPreview && (
+                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/12 px-2.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3 w-3" />
+                    {liveUrlPreview.videoId}
+                  </span>
+                )}
               </div>
-              <button
-                type="button"
-                onClick={() => onChangeYoutubeUrl("")}
-                aria-label="Clear URL"
-                className="rounded-full p-1 text-[var(--ink-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--ink-primary)]"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
+
+              {/* Instant Live Video Thumbnail Preview when valid URL is pasted */}
+              {liveUrlPreview && (
+                <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] bg-[var(--bg-sunken)]/65 px-5 py-2.5">
+                  <div className="flex items-center gap-3 min-w-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={liveUrlPreview.thumbnailUrl}
+                      alt="YouTube clip preview"
+                      className="h-10 w-16 shrink-0 rounded-lg border border-[var(--border-subtle)] object-cover"
+                    />
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-[var(--ink-primary)]">
+                        Clip ready for scene analysis
+                      </div>
+                      <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                        {liveUrlPreview.canonicalUrl}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onChangeYoutubeUrl("")}
+                    aria-label="Clear URL"
+                    className="rounded-full p-1 text-[var(--ink-muted)] hover:bg-[var(--bg-elevated)] hover:text-[var(--ink-primary)]"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+            </>
           )}
 
           {/* Row 2: Shopper Natural-Language Question */}
@@ -190,7 +246,7 @@ export function HomeStage({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (youtubeUrl.trim() && question.trim() && !isRunning) {
+                  if (hasSource && question.trim() && !isRunning) {
                     onSubmitTrace();
                   }
                 }
@@ -245,7 +301,7 @@ export function HomeStage({
                 className="hidden"
               />
 
-              {companionFile ? (
+              {isCamera ? null : companionFile ? (
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/35 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-700 dark:text-amber-300">
                   <Paperclip className="h-3.5 w-3.5" />
                   <span className="max-w-[180px] truncate">
@@ -336,6 +392,7 @@ export function HomeStage({
                 type="button"
                 disabled={isRunning}
                 onClick={() => {
+                  if (isCamera) onChangeInputSource("youtube");
                   onChangeYoutubeUrl(scene.url);
                   onChangeQuestion(scene.question);
                   onSubmitTrace({ url: scene.url, question: scene.question });

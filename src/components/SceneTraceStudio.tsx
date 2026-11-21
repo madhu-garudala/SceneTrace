@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { CheckoutModal } from "@/components/CheckoutModal";
 import { DiagnosticsDrawer } from "@/components/DiagnosticsDrawer";
-import { HomeStage } from "@/components/HomeStage";
+import { HomeStage, type TraceInputSource } from "@/components/HomeStage";
 import { ItemDossierCard } from "@/components/ItemDossierCard";
 import { StudioNavbar } from "@/components/StudioNavbar";
 import { YouTubeMonitor } from "@/components/YouTubeMonitor";
@@ -47,8 +47,12 @@ import type {
 import {
   extractFramesFromCompanionVideo,
   readCompanionStillImage,
+  readFileAsBase64,
 } from "@/lib/video/frames-client";
-import { parseAndNormalizeYouTubeUrl } from "@/lib/video/youtube";
+import {
+  parseAndNormalizeYouTubeUrl,
+  type NormalizedYouTubeVideo,
+} from "@/lib/video/youtube";
 
 type PipelineStage =
   | "idle"
@@ -72,6 +76,7 @@ export function SceneTraceStudio({
   defaultCurrency,
 }: SceneTraceStudioProps) {
   const [darkMode, setDarkMode] = useState(true);
+  const [inputSource, setInputSource] = useState<TraceInputSource>("youtube");
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [question, setQuestion] = useState("");
   const [videoModel, setVideoModel] =
@@ -96,6 +101,8 @@ export function SceneTraceStudio({
   // Trace data
   const [traceId, setTraceId] = useState<string | null>(null);
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+  // Set only for camera traces; stands in for the YouTube player in the results view.
+  const [cameraStill, setCameraStill] = useState<EvidenceFrame | null>(null);
   const [items, setItems] = useState<TracedItem[]>([]);
   const [activeItemId, setActiveItemId] = useState<string | null>(null);
   const [seekRequest, setSeekRequest] = useState<{
@@ -216,6 +223,7 @@ export function SceneTraceStudio({
     setItems([]);
     setTraceId(null);
     setActiveVideoId(null);
+    setCameraStill(null);
     setActiveItemId(null);
     setItemFilterId("all");
     setEditQueryExpanded(false);
@@ -227,6 +235,14 @@ export function SceneTraceStudio({
     setElapsedMs(0);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
+
+  const handleChangeInputSource = (next: TraceInputSource) => {
+    if (next === inputSource) return;
+    // The companion slot holds the camera still in camera mode; never carry it across.
+    setCompanionFile(null);
+    setTraceError(null);
+    setInputSource(next);
+  };
 
   const liveUrlPreview = useMemo(() => {
     if (!youtubeUrl.trim()) return null;
@@ -489,6 +505,10 @@ export function SceneTraceStudio({
     const targetUrl = override?.url ?? youtubeUrl;
     const targetQuestion = override?.question ?? question;
     const bypassCache = Boolean(override?.bypassCache);
+    // Showcase clicks pass their own URL, so they always take the YouTube path.
+    const useCamera = inputSource === "camera" && !override?.url;
+    const attachedFile =
+      inputSource === "camera" && !useCamera ? null : companionFile;
 
     setTraceError(null);
     setFrameWarning(null);
@@ -496,14 +516,21 @@ export function SceneTraceStudio({
     setEditQueryExpanded(false);
     setItemFilterId("all");
 
-    let normalized: ReturnType<typeof parseAndNormalizeYouTubeUrl>;
-    try {
-      normalized = parseAndNormalizeYouTubeUrl(targetUrl);
-    } catch (err) {
-      setTraceError(
-        err instanceof Error ? err.message : "Invalid YouTube URL.",
-      );
-      return;
+    let normalized: NormalizedYouTubeVideo | null = null;
+    if (useCamera) {
+      if (!attachedFile || !attachedFile.type.startsWith("image/")) {
+        setTraceError("Capture a photo with your camera before tracing.");
+        return;
+      }
+    } else {
+      try {
+        normalized = parseAndNormalizeYouTubeUrl(targetUrl);
+      } catch (err) {
+        setTraceError(
+          err instanceof Error ? err.message : "Invalid YouTube URL.",
+        );
+        return;
+      }
     }
 
     if (targetQuestion.trim().length < 3) {
@@ -511,23 +538,26 @@ export function SceneTraceStudio({
       return;
     }
 
-    const companionSig = companionFile
-      ? `${companionFile.name}:${companionFile.size}:${companionFile.lastModified}`
+    const companionSig = attachedFile
+      ? `${attachedFile.name}:${attachedFile.size}:${attachedFile.lastModified}`
       : "none";
-    const clientCacheKey = makeClientTraceCacheKey({
-      videoId: normalized.videoId,
-      question: targetQuestion,
-      videoModel,
-      managedAgentEnabled,
-      companionSignature: companionSig,
-    });
+    const clientCacheKey = normalized
+      ? makeClientTraceCacheKey({
+          videoId: normalized.videoId,
+          question: targetQuestion,
+          videoModel,
+          managedAgentEnabled,
+          companionSignature: companionSig,
+        })
+      : null;
 
     // Instant client-side cache fast path (<15ms) when repeating an identical URL+question run
-    if (!bypassCache && !companionFile) {
+    if (normalized && clientCacheKey && !bypassCache && !attachedFile) {
       const hit = readClientTraceCache(clientCacheKey);
       if (hit) {
         activeRunIdRef.current++;
         setActiveVideoId(normalized.videoId);
+        setCameraStill(null);
         setTraceId(hit.traceId);
         setItems(hit.items);
         setExtractDiagnostics({ ...hit.extractDiagnostics, cacheHit: true });
@@ -550,14 +580,39 @@ export function SceneTraceStudio({
       }
     }
 
-    const runId = ++activeRunIdRef.current;
-    if (activeVideoId !== normalized.videoId) {
-      youtubeDurationRef.current = null;
-      setActiveVideoId(normalized.videoId);
+    // Camera: decode the still once for display/evidence and read raw bytes for extraction.
+    let cameraFrame: EvidenceFrame | null = null;
+    let cameraBase64 = "";
+    if (useCamera && attachedFile) {
+      try {
+        const [still, base64] = await Promise.all([
+          readCompanionStillImage(attachedFile),
+          readFileAsBase64(attachedFile),
+        ]);
+        cameraFrame = { ...still, label: "Camera capture" };
+        cameraBase64 = base64;
+      } catch (err) {
+        setTraceError(
+          err instanceof Error ? err.message : "Could not read camera capture.",
+        );
+        return;
+      }
     }
+
+    const runId = ++activeRunIdRef.current;
+    const nextVideoId = normalized?.videoId ?? null;
+    if (activeVideoId !== nextVideoId) {
+      youtubeDurationRef.current = null;
+      setActiveVideoId(nextVideoId);
+    }
+    setCameraStill(cameraFrame);
     setElapsedMs(0);
     setStage("extracting");
-    setStageAnnouncement("Analyzing video scenes with Gemini 4…");
+    setStageAnnouncement(
+      useCamera
+        ? "Analyzing camera still with Gemini 4…"
+        : "Analyzing video scenes with Gemini 4…",
+    );
     setItems([]);
     setFramesByItem({});
     setAgentReportsByItem({});
@@ -568,16 +623,21 @@ export function SceneTraceStudio({
     let anyStageHitCache = false;
 
     try {
-      const extractRes = await fetch("/api/traces/extract", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          youtubeUrl: normalized.canonicalUrl,
-          question: targetQuestion.trim(),
-          videoModel,
-          bypassCache,
-        }),
-      });
+      const extractRes = await fetch(
+        useCamera ? "/api/traces/extract-image" : "/api/traces/extract",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(useCamera
+              ? { imageBase64: cameraBase64, mimeType: attachedFile?.type }
+              : { youtubeUrl: normalized?.canonicalUrl }),
+            question: targetQuestion.trim(),
+            videoModel,
+            bypassCache,
+          }),
+        },
+      );
 
       const extractJson = (await extractRes.json()) as
         | ExtractResponse
@@ -588,7 +648,7 @@ export function SceneTraceStudio({
       if (!extractRes.ok || !("items" in extractJson)) {
         const msg =
           ("error" in extractJson && extractJson.error) ||
-          `Video analysis failed (${extractRes.status}).`;
+          `${useCamera ? "Photo" : "Video"} analysis failed (${extractRes.status}).`;
         setStage("failed");
         setTraceError(msg);
         setStageAnnouncement(`Analysis failed: ${msg}`);
@@ -617,12 +677,17 @@ export function SceneTraceStudio({
       });
 
       let capturedFramesMap: Record<string, EvidenceFrame[]> = {};
-      if (companionFile) {
+      if (attachedFile) {
         setStage("capturing_frames");
         setStageAnnouncement("Capturing supporting frames from attached media…");
         try {
-          if (companionFile.type.startsWith("image/")) {
-            const singleStill = await readCompanionStillImage(companionFile);
+          if (cameraFrame) {
+            // Every item was found in this one photo, so it is evidence for all of them.
+            for (const it of extractJson.items) {
+              capturedFramesMap[it.itemId] = [cameraFrame];
+            }
+          } else if (attachedFile.type.startsWith("image/")) {
+            const singleStill = await readCompanionStillImage(attachedFile);
             capturedFramesMap[firstItem.itemId] = [singleStill];
             if (extractJson.items.length > 1) {
               setFrameWarning(
@@ -631,7 +696,7 @@ export function SceneTraceStudio({
             }
           } else {
             const captureResult = await extractFramesFromCompanionVideo(
-              companionFile,
+              attachedFile,
               extractJson.items,
               youtubeDurationRef.current,
             );
@@ -829,8 +894,8 @@ export function SceneTraceStudio({
       upsertStoredTraceRecord({
         traceId: extractJson.traceId,
         createdAt: new Date().toISOString(),
-        videoId: normalized.videoId,
-        canonicalUrl: normalized.canonicalUrl,
+        videoId: extractJson.videoId,
+        canonicalUrl: extractJson.canonicalUrl,
         question: targetQuestion.trim(),
         totalDurationMs: Math.max(100, traceTotalMs),
         extractDiagnostics: extractJson.diagnostics,
@@ -842,7 +907,7 @@ export function SceneTraceStudio({
       });
       setTraceHistory(readStoredTraceHistory());
 
-      if (!hadAnyError && !companionFile) {
+      if (!hadAnyError && !attachedFile && normalized && clientCacheKey) {
         writeClientTraceCache({
           cacheKey: clientCacheKey,
           savedAt: Date.now(),
@@ -1214,6 +1279,8 @@ export function SceneTraceStudio({
 
       {isHomeView ? (
         <HomeStage
+          inputSource={inputSource}
+          onChangeInputSource={handleChangeInputSource}
           youtubeUrl={youtubeUrl}
           onChangeYoutubeUrl={setYoutubeUrl}
           question={question}
@@ -1247,7 +1314,9 @@ export function SceneTraceStudio({
                     “{question}”
                   </div>
                   <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                    {liveUrlPreview?.canonicalUrl || youtubeUrl}
+                    {cameraStill
+                      ? "Camera capture"
+                      : liveUrlPreview?.canonicalUrl || youtubeUrl}
                   </div>
                 </div>
               </div>
@@ -1291,21 +1360,25 @@ export function SceneTraceStudio({
                 }}
                 className="mt-4 grid grid-cols-1 gap-2.5 border-t border-[var(--border-subtle)] pt-4 sm:grid-cols-12"
               >
-                <input
-                  type="url"
-                  required
-                  value={youtubeUrl}
-                  onChange={(e) => setYoutubeUrl(e.target.value)}
-                  placeholder="YouTube URL"
-                  className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none sm:col-span-5"
-                />
+                {!cameraStill && (
+                  <input
+                    type="url"
+                    required
+                    value={youtubeUrl}
+                    onChange={(e) => setYoutubeUrl(e.target.value)}
+                    placeholder="YouTube URL"
+                    className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none sm:col-span-5"
+                  />
+                )}
                 <input
                   type="text"
                   required
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
                   placeholder="What should SceneTrace find?"
-                  className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none sm:col-span-5"
+                  className={`rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none ${
+                    cameraStill ? "sm:col-span-10" : "sm:col-span-5"
+                  }`}
                 />
                 <button
                   type="submit"
@@ -1334,7 +1407,7 @@ export function SceneTraceStudio({
                   ? [
                       {
                         id: "frames",
-                        label: "Frame crops",
+                        label: cameraStill ? "Camera still" : "Frame crops",
                         done:
                           stage === "agent_investigating" ||
                           stage === "matching" ||
@@ -1426,6 +1499,7 @@ export function SceneTraceStudio({
                   }}
                   framesByItem={framesByItem}
                   hasCompanionMedia={Boolean(companionFile)}
+                  cameraStill={cameraStill}
                 />
               </div>
             </div>
@@ -1526,6 +1600,7 @@ export function SceneTraceStudio({
                     isSelected={activeItemId === item.itemId}
                     onSelect={() => setActiveItemId(item.itemId)}
                     onSeekTo={(sec) => triggerSeek(item.itemId, sec)}
+                    hasTimeline={!cameraStill}
                     frames={itemFrames}
                     offers={offersByItem[item.itemId] ?? []}
                     isMatching={Boolean(matchingItemIds[item.itemId])}
