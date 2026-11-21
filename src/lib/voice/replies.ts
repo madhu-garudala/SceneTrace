@@ -1,6 +1,10 @@
 import type { VoiceContext, VoiceIntent, VoiceSlots } from "./types";
 
-/** Short spoken replies. Unknown is deliberately silent. */
+/**
+ * Short spoken replies. Unknown is deliberately silent. Replies avoid command
+ * words ("checkout", "check", "next", "add") so that if the mic picks the app
+ * up, what it hears can't be read as a new command.
+ */
 export function replyFor(
   intent: VoiceIntent,
   slots: VoiceSlots,
@@ -20,11 +24,11 @@ export function replyFor(
     case "select_offer":
       return slots.index ? `Number ${slots.index}.` : "That one.";
     case "checkout":
-      return "Opening checkout.";
+      return "Done.";
     case "next_item":
-      return "Next one.";
+      return "Moving on.";
     case "diagnose":
-      return "Checking it.";
+      return "One moment.";
     case "show_evidence":
       return "Here's why.";
     case "stop":

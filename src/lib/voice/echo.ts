@@ -43,8 +43,13 @@ export type EchoGuard = {
   clear(): void;
 };
 
+/** Letters and digits only: "opening check out" and "Opening checkout." compare equal. */
+export function compact(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 export function createEchoGuard(windowMs: number = ECHO_WINDOW_MS): EchoGuard {
-  let entries: { at: number; tokens: Set<string> }[] = [];
+  let entries: { at: number; tokens: Set<string>; flat: string }[] = [];
   const prune = (now: number) => {
     entries = entries.filter((e) => now - e.at <= windowMs);
   };
@@ -52,13 +57,29 @@ export function createEchoGuard(windowMs: number = ECHO_WINDOW_MS): EchoGuard {
     remember(text, now = Date.now()) {
       prune(now);
       const tokens = new Set(tokenize(text));
-      if (tokens.size) entries.push({ at: now, tokens });
+      const flat = compact(text);
+      if (tokens.size || flat) entries.push({ at: now, tokens, flat });
     },
     isEcho(heard, now = Date.now()) {
       prune(now);
+      const heardFlat = compact(heard);
+      // Speech-to-text splits and joins words freely ("checkout" / "check out"),
+      // so also match on the letters alone when the heard text covers most of a reply.
+      if (
+        heardFlat.length >= 4 &&
+        entries.some(
+          (e) =>
+            e.flat.length >= 4 &&
+            ((e.flat.includes(heardFlat) && heardFlat.length >= 0.6 * e.flat.length) ||
+              heardFlat.includes(e.flat)),
+        )
+      ) {
+        return true;
+      }
       const heardTokens = tokenize(heard);
       if (!heardTokens.length) return false;
       return entries.some((e) => {
+        if (!e.tokens.size) return false;
         const hits = heardTokens.filter((t) => e.tokens.has(t)).length;
         return hits / heardTokens.length >= ECHO_THRESHOLD;
       });

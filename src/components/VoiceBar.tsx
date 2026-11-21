@@ -53,6 +53,10 @@ export function suggestedPrompts(ctx: VoiceContext): string[] {
   return ["Switch to camera", "Find the watch in this video"];
 }
 
+/** Commands with side effects are not repeated within this window. */
+const REPEAT_COOLDOWN_MS = 6_000;
+const COOLDOWN_INTENTS = new Set<VoiceIntent>(["checkout", "diagnose", "trace", "capture", "refine"]);
+
 const LOOP_COUNT = 3;
 const LOOP_WINDOW_MS = 10_000;
 
@@ -66,6 +70,7 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
   const { speak, stop, speaking } = useSpeak();
   const echo = useRef(createEchoGuard());
   const history = useRef<Record<string, number[]>>({});
+  const lastRun = useRef<Record<string, number>>({});
   const contextRef = useRef(context);
   contextRef.current = context;
   const onIntentRef = useRef(onIntent);
@@ -94,6 +99,15 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
       recent.push(now);
       history.current[data.intent] = recent;
       const looping = recent.length >= LOOP_COUNT;
+
+      // A repeat of the same buy/repair/search inside the cooldown is almost
+      // always the mic hearing the app (or a double take), never a second purchase.
+      if (COOLDOWN_INTENTS.has(data.intent)) {
+        const key = `${data.intent}|${(data.slots?.question ?? "").toLowerCase()}`;
+        const prior = lastRun.current[key];
+        if (prior && now - prior < REPEAT_COOLDOWN_MS) return;
+        lastRun.current[key] = now;
+      }
 
       if (data.reply && !looping) {
         echo.current.remember(data.reply);

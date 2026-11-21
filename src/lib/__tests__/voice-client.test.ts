@@ -29,3 +29,13 @@ describe("echo guard", () => {
     expect(g.isEcho("remove that from your card", ECHO_WINDOW_MS + 1)).toBe(false);
   });
 });
+
+describe("echo guard joins split words", () => {
+  it("treats 'opening check out' as an echo of 'Opening checkout.'", async () => {
+    const { createEchoGuard } = await import("@/lib/voice/echo");
+    const g = createEchoGuard();
+    g.remember("Opening checkout.", 1000);
+    expect(g.isEcho("opening check out", 2000)).toBe(true);
+    expect(g.isEcho("add the charger to my cart", 2000)).toBe(false);
+  });
+});
