@@ -4,7 +4,9 @@ import {
   damageLevel,
   decide,
   faultProbability,
+  applyPartPriceFloor,
   filterByFit,
+  poolOffers,
   isOnTopic,
   median,
   validReplacement,
@@ -89,6 +91,18 @@ describe("fit filter", () => {
     const out = filterByFit(offers, null, "Sony hinge swivel replacement");
     expect(out).toContain(offers[0]);
     expect(out).not.toContain(offers[1]);
+  });
+});
+
+describe("part pooling and price floor", () => {
+  it("drops parts under 1.00", () => {
+    expect(applyPartPriceFloor([{ amountMinor: 2 }, { amountMinor: 99 }, { amountMinor: 100 }])).toEqual([{ amountMinor: 100 }]);
+  });
+  it("pools searches and de-duplicates by product and variant", () => {
+    const a = { productId: "p1", variantId: "v1", t: "a" };
+    const b = { productId: "p1", variantId: "v2", t: "b" };
+    const c = { productId: "p2", variantId: "v1", t: "c" };
+    expect(poolOffers([[a, b], [{ ...a, t: "dup" }, c], []])).toEqual([a, b, c]);
   });
 });
 

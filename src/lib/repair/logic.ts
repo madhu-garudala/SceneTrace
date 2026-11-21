@@ -152,8 +152,37 @@ export const FIT_THRESHOLD = 0.5;
 export function filterByFit<T extends { title: string }>(
   offers: T[],
   scores: (number | null)[] | null,
-  query: string,
+  query: string | string[],
 ): T[] {
-  if (scores === null) return offers.filter((o) => isOnTopic(query, o.title));
+  const queries = Array.isArray(query) ? query : [query];
+  if (scores === null) {
+    return offers.filter((o) => queries.some((q) => isOnTopic(q, o.title)));
+  }
   return offers.filter((_, i) => (scores[i] ?? 0) >= FIT_THRESHOLD);
+}
+
+export const PART_PRICE_FLOOR_MINOR = 100;
+
+/** Drop parts under 1.00: sub-dollar listings are screws and brackets, not repairs. */
+export function applyPartPriceFloor<T extends { amountMinor: number }>(
+  offers: T[],
+): T[] {
+  return offers.filter((o) => o.amountMinor >= PART_PRICE_FLOOR_MINOR);
+}
+
+/** Pool candidates from several searches, de-duplicated by product + variant. */
+export function poolOffers<
+  T extends { productId: string; variantId: string },
+>(lists: T[][]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const list of lists) {
+    for (const o of list) {
+      const key = `${o.productId}::${o.variantId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(o);
+    }
+  }
+  return out;
 }
