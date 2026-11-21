@@ -3,7 +3,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  outputFileTracingRoot: path.resolve(process.cwd()),
+  ...(process.env.VERCEL
+    ? {}
+    : { outputFileTracingRoot: path.resolve(process.cwd()) }),
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "cdn.shopify.com" },
