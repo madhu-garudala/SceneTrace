@@ -126,4 +126,43 @@ describe("Camera still extraction request validation", () => {
     expect(item.features[0].atSec).toBe(0);
     expect(item.bestBox2d).toEqual([120, 200, 880, 800]);
   });
+
+  it("surfaces item condition for stills and drops a malformed condition without dropping the item", () => {
+    const baseItem = {
+      category: "headphones",
+      label: "Black Over-Ear Headphones",
+      summary: "Matte black over-ear headphones.",
+      brand: "Sony",
+      modelReference: "",
+      bestEvidenceSec: 0,
+      bestBox2d: [],
+      sightings: [{ startSec: 0, endSec: 0, evidenceSec: 0, observation: "Photo" }],
+      features: [],
+      searchQueries: ["sony black over-ear headphones"],
+    };
+    const normalized = normalizeRawExtractionPayload(
+      {
+        videoSummary: "",
+        items: [
+          {
+            ...baseItem,
+            condition: { damageVisible: true, signs: [" cracked hinge ", "cracked hinge", "peeling earpad"] },
+          },
+          { ...baseItem, condition: { damageVisible: false, signs: ["stray"] } },
+          { ...baseItem, condition: { damageVisible: "yes" } },
+          baseItem,
+        ],
+      },
+      { stillImage: true },
+    );
+
+    expect(normalized.items).toHaveLength(4);
+    expect(normalized.items[0].condition).toEqual({
+      damageVisible: true,
+      signs: ["cracked hinge", "peeling earpad"],
+    });
+    expect(normalized.items[1].condition).toEqual({ damageVisible: false, signs: [] });
+    expect(normalized.items[2].condition).toBeUndefined();
+    expect(normalized.items[3].condition).toBeUndefined();
+  });
 });

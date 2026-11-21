@@ -4,6 +4,7 @@ import { getGeminiApiKey, resolveVideoModel } from "@/lib/env";
 import type {
   BoundingBox2D,
   ExtractDiagnostics,
+  ItemCondition,
   ShopperConstraints,
   TracedItem,
 } from "@/lib/types";
@@ -26,6 +27,11 @@ const RawSightingSchema = z.object({
   observation: z.string().min(1).max(320),
 });
 
+const RawItemConditionSchema = z.object({
+  damageVisible: z.boolean(),
+  signs: z.array(z.string().max(160)).max(8),
+});
+
 const RawExtractedItemSchema = z.object({
   category: z.string().min(1).max(80),
   label: z.string().min(1).max(160),
@@ -37,6 +43,8 @@ const RawExtractedItemSchema = z.object({
   sightings: z.array(RawSightingSchema).min(1).max(8),
   features: z.array(RawObservedFeatureSchema).max(10),
   searchQueries: z.array(z.string().min(1).max(160)).min(1).max(4),
+  // Image path only; a malformed condition is dropped, never the whole item.
+  condition: RawItemConditionSchema.optional().catch(undefined),
 });
 
 const RawShopperConstraintsSchema = z
@@ -190,6 +198,48 @@ const EXTRACTION_JSON_SCHEMA = {
   required: ["videoSummary", "shopperConstraints", "items"],
 } as const;
 
+const ITEM_CONDITION_JSON_SCHEMA = {
+  type: "object",
+  description:
+    "Visible physical condition of this exact item in the photo.",
+  properties: {
+    damageVisible: {
+      type: "boolean",
+      description:
+        "true only if the photo clearly shows damage such as cracks, breaks, tears, missing parts, dents, stains, or heavy wear; false when the item looks fine.",
+    },
+    signs: {
+      type: "array",
+      description:
+        "Each visible damage sign as a short phrase (e.g., 'cracked left hinge', 'peeling earpad'), or empty array [] when damageVisible is false.",
+      items: { type: "string" },
+    },
+  },
+  required: ["damageVisible", "signs"],
+} as const;
+
+// Still photos share the video schema and add a per-item `condition` field.
+const IMAGE_EXTRACTION_JSON_SCHEMA = {
+  ...EXTRACTION_JSON_SCHEMA,
+  properties: {
+    ...EXTRACTION_JSON_SCHEMA.properties,
+    items: {
+      ...EXTRACTION_JSON_SCHEMA.properties.items,
+      items: {
+        ...EXTRACTION_JSON_SCHEMA.properties.items.items,
+        properties: {
+          ...EXTRACTION_JSON_SCHEMA.properties.items.items.properties,
+          condition: ITEM_CONDITION_JSON_SCHEMA,
+        },
+        required: [
+          ...EXTRACTION_JSON_SCHEMA.properties.items.items.required,
+          "condition",
+        ],
+      },
+    },
+  },
+};
+
 export type ExtractionMediaSource = "video" | "image";
 
 function buildExtractionPrompt(
@@ -220,6 +270,9 @@ function buildExtractionPrompt(
       : "5. Provenance: Mark every feature strictly as `visible`, `spoken`, or `inferred`.",
     "6. Shopper constraints: Populate `shopperConstraints` ONLY when the shopper explicitly stated a budget (e.g., 'under $50'), size (e.g., 'size 10'), or color filter in their question.",
     "7. Search queries: Provide 2–3 clean Shopify catalog search strings per item (no filler words like 'buy' or 'best').",
+    isImage
+      ? "8. Condition: Set `condition.damageVisible` to true only when the photo clearly shows damage on the item (cracks, breaks, tears, missing parts, dents, stains, heavy wear) and list each sign in `condition.signs`; otherwise false and []. Condition never changes which product it is or the search queries."
+      : "",
     retryHint ? `\nIMPORTANT CORRECTION FOR RETRY: ${retryHint}` : "",
   ]
     .filter(Boolean)
@@ -265,6 +318,17 @@ function normalizeBox2d(rawBox: number[] | undefined): BoundingBox2D | null {
   );
   if (ymax - ymin < 25 || xmax - xmin < 25) return null;
   return [ymin, xmin, ymax, xmax];
+}
+
+function normalizeCondition(
+  raw: z.infer<typeof RawItemConditionSchema> | undefined,
+): ItemCondition | undefined {
+  if (!raw) return undefined;
+  const signs = Array.from(
+    new Set(raw.signs.map((s) => s.trim()).filter(Boolean)),
+  );
+  const damageVisible = raw.damageVisible && signs.length > 0;
+  return { damageVisible, signs: damageVisible ? signs : [] };
 }
 
 function parseConstraints(raw: unknown): ShopperConstraints | undefined {
@@ -359,6 +423,7 @@ export function normalizeRawExtractionPayload(
       source: f.source,
     }));
 
+    const condition = normalizeCondition(raw.condition);
     const brand = raw.brand.trim() ? raw.brand.trim() : null;
     const modelReference = raw.modelReference.trim()
       ? raw.modelReference.trim()
@@ -390,6 +455,7 @@ export function normalizeRawExtractionPayload(
       modelReference,
       searchQueries: cleanQueries.slice(0, 3),
       ...(constraints ? { constraints } : {}),
+      ...(condition ? { condition } : {}),
     });
   }
 
@@ -442,7 +508,10 @@ async function runStructuredExtraction(params: {
       response_format: {
         type: "text",
         mime_type: "application/json",
-        schema: EXTRACTION_JSON_SCHEMA,
+        schema:
+          params.source === "image"
+            ? IMAGE_EXTRACTION_JSON_SCHEMA
+            : EXTRACTION_JSON_SCHEMA,
       },
     };
 

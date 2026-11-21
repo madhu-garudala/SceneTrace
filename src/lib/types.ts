@@ -23,6 +23,12 @@ export type ShopperConstraints = {
   requestedColor: string | null;
 };
 
+/** Visible physical condition, reported only for camera stills. */
+export type ItemCondition = {
+  damageVisible: boolean;
+  signs: string[];
+};
+
 export type TracedItem = {
   itemId: string;
   category: string;
@@ -36,6 +42,7 @@ export type TracedItem = {
   modelReference: string | null;
   searchQueries: string[];
   constraints?: ShopperConstraints;
+  condition?: ItemCondition;
 };
 
 export type EvidenceFrame = {
