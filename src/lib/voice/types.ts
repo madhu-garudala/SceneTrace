@@ -13,7 +13,8 @@ export type VoiceIntent =
   | "trace" // "which watch is this", "find this", "what are these headphones" — slot: question
   | "refine" // "under 100 dollars", "in black", "size 10" — slots: maxPrice/color/size
   | "select_offer" // "the second one", "the cheaper one" — slots: index/description
-  | "checkout" // "buy it", "check out", "I'll take it"
+  | "diagnose" // "this is broken", "something's wrong with it", "is it worth fixing" — repair path
+  | "checkout" // "buy it", "check out", "I'll take it", "I want to buy a new one"
   | "next_item" // "next one", "scan something else", "start over"
   | "show_evidence" // "why", "how do you know", "show me the proof"
   | "stop" // "stop", "be quiet", "never mind"
@@ -26,6 +27,7 @@ export const VOICE_INTENTS: readonly VoiceIntent[] = [
   "trace",
   "refine",
   "select_offer",
+  "diagnose",
   "checkout",
   "next_item",
   "show_evidence",
