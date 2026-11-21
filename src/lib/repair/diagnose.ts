@@ -390,7 +390,7 @@ async function fitOffers(params: {
   signal?: AbortSignal;
 }): Promise<RepairOffer[]> {
   if (params.offers.length === 0) return [];
-  let scores: (number | null)[] | null = null;
+  let scores: (number | null)[] | null;
   try {
     scores = await rerankFit(params);
   } catch {
