@@ -68,12 +68,11 @@ export function decide(params: {
   damage: number;
   part: Pick<RepairOffer, "amountMinor"> | null;
   replacement: Pick<RepairOffer, "amountMinor"> | null;
-  /** A replacement was found but priced at/below the part, so the price data is untrustworthy. */
-  replacementDropped?: boolean;
 }): RepairDecision {
   if (params.damage < NO_ACTION_DAMAGE_THRESHOLD) return "no_action";
   if (!params.part) return "abstain";
-  if (params.replacementDropped) return "abstain";
+  // No trustworthy replacement (none found, or dropped as cheaper than the
+  // part): a real part for a real fault is still a defensible repair call.
   if (!params.replacement) return "repair"; // dropped/missing replacement: nothing cheaper to compare against
   return params.part.amountMinor < REPAIR_PRICE_RATIO * params.replacement.amountMinor
     ? "repair"
@@ -142,4 +141,19 @@ export function templatedSummary(params: {
     default:
       return `The ${p} part is not much cheaper than a new one${r ? ` at ${r}` : ""}, so replacing your ${itemLabel} makes more sense.`;
   }
+}
+
+export const FIT_THRESHOLD = 0.5;
+
+/**
+ * Keep listings the Decisions rerank judged a genuine fit (p >= 0.5). When the
+ * rerank failed (scores === null), fall back to the word-overlap filter.
+ */
+export function filterByFit<T extends { title: string }>(
+  offers: T[],
+  scores: (number | null)[] | null,
+  query: string,
+): T[] {
+  if (scores === null) return offers.filter((o) => isOnTopic(query, o.title));
+  return offers.filter((_, i) => (scores[i] ?? 0) >= FIT_THRESHOLD);
 }

@@ -4,6 +4,7 @@ import {
   damageLevel,
   decide,
   faultProbability,
+  filterByFit,
   isOnTopic,
   median,
   validReplacement,
@@ -62,8 +63,8 @@ describe("decision rules", () => {
     expect(validReplacement({ amountMinor: 900 }, { amountMinor: 1000 })).toBeNull();
     expect(validReplacement({ amountMinor: 1100 }, { amountMinor: 1000 })).not.toBeNull();
   });
-  it("abstains rather than guess when the replacement was dropped", () => {
-    expect(decide({ damage: 0.6, part, replacement: null, replacementDropped: true })).toBe("abstain");
+  it("still repairs when a part exists but no trustworthy replacement does", () => {
+    expect(decide({ damage: 0.6, part, replacement: null })).toBe("repair");
   });
   it("uses the median, so a cheap accessory does not set the price", () => {
     expect(median([1000, 11000, 12000])).toBe(11000);
@@ -72,6 +73,22 @@ describe("decision rules", () => {
   it("filters off-topic listings", () => {
     expect(isOnTopic("Sony WH-1000XM4 headphones", "Sony WH-1000XM4 Wireless Headphones")).toBe(true);
     expect(isOnTopic("Sony WH-1000XM4 headphones", "Leather camera strap")).toBe(false);
+  });
+});
+
+describe("fit filter", () => {
+  const offers = [
+    { title: "Sony WH-1000XM4 hinge swivel replacement" },
+    { title: "Leather camera strap" },
+    { title: "Sony headphone ear pad" },
+  ];
+  it("keeps listings scored >= 0.5 and drops unscored ones", () => {
+    expect(filterByFit(offers, [0.9, 0.2, null], "x")).toEqual([offers[0]]);
+  });
+  it("falls back to the on-topic word filter when the rerank failed", () => {
+    const out = filterByFit(offers, null, "Sony hinge swivel replacement");
+    expect(out).toContain(offers[0]);
+    expect(out).not.toContain(offers[1]);
   });
 });
 

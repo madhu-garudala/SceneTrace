@@ -4,7 +4,8 @@ import {
   buildFaults,
   damageLevel,
   decide,
-  isOnTopic,
+  filterByFit,
+  formatMoney,
   median,
   rankFaults,
   templatedSummary,
@@ -326,7 +327,76 @@ async function searchOffers(
   return candidates
     .map(toRepairOffer)
     .filter((o): o is RepairOffer => o !== null)
-    .filter((o) => isOnTopic(query, o.title));
+    // Prices are compared directly, so never mix currencies (a listing came back in MXN).
+    .filter((o) => o.currency === currency.toUpperCase());
+}
+
+/** One batched Decisions call: does each listing genuinely fit the purpose? */
+async function rerankFit(params: {
+  offers: RepairOffer[];
+  statement: (o: RepairOffer) => string;
+  criteria: { true_description: string; false_description: string };
+  image: ImageInput;
+  signal?: AbortSignal;
+}): Promise<(number | null)[]> {
+  const questions: Record<string, unknown> = {};
+  params.offers.forEach((o, i) => {
+    questions[`c_${i}`] = {
+      type: "noul",
+      instructions: params.statement(o),
+      criteria: params.criteria,
+    };
+  });
+  const timeout = AbortSignal.timeout(20_000);
+  const response = await fetch(DECISIONS_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": getGeminiApiKey(),
+    },
+    body: JSON.stringify({
+      model: getDecisionsModel(),
+      input: [
+        {
+          type: "image",
+          data: params.image.imageBase64,
+          mime_type: params.image.mimeType,
+          resolution: "medium",
+        },
+        { type: "text", text: "This is the item being assessed." },
+      ],
+      questions,
+    }),
+    signal: params.signal ? AbortSignal.any([params.signal, timeout]) : timeout,
+  });
+  const rawText = await response.text();
+  if (!response.ok) throw new Error(`Decisions rerank HTTP ${response.status}`);
+  const answers = (JSON.parse(rawText) as {
+    answers?: Record<string, { noul?: number }>;
+  }).answers;
+  if (!answers) throw new Error("Decisions rerank returned no answers.");
+  return params.offers.map((_, i) => {
+    const v = answers[`c_${i}`]?.noul;
+    return typeof v === "number" && v >= 0 && v <= 1 ? v : null;
+  });
+}
+
+async function fitOffers(params: {
+  offers: RepairOffer[];
+  query: string;
+  statement: (o: RepairOffer) => string;
+  criteria: { true_description: string; false_description: string };
+  image: ImageInput;
+  signal?: AbortSignal;
+}): Promise<RepairOffer[]> {
+  if (params.offers.length === 0) return [];
+  let scores: (number | null)[] | null = null;
+  try {
+    scores = await rerankFit(params);
+  } catch {
+    scores = null;
+  }
+  return filterByFit(params.offers, scores, params.query);
 }
 
 async function writeSummary(params: {
@@ -390,7 +460,6 @@ export async function diagnoseRepair(params: {
   let replacementQuery = "";
   let part: RepairOffer | null = null;
   let replacement: RepairOffer | null = null;
-  let replacementDropped = false;
   let queryMs = 0;
   let searchMs = 0;
 
@@ -403,8 +472,42 @@ export async function diagnoseRepair(params: {
       replacementQuery = q.value.replacementQuery;
       const s = await timed(() =>
         Promise.all([
-          searchOffers(partQuery, item, signal).catch(() => [] as RepairOffer[]),
-          searchOffers(replacementQuery, item, signal).catch(() => [] as RepairOffer[]),
+          searchOffers(partQuery, item, signal)
+            .then((offers) =>
+              fitOffers({
+                offers,
+                query: partQuery,
+                criteria: {
+                  true_description:
+                    "The listing is a replacement component that would fix the stated fault on this item.",
+                  false_description:
+                    "The listing is an accessory, cushion, cover, case, cable or unrelated product, does not address the fault, or is for a different model.",
+                },
+                image,
+                signal,
+                statement: (o) =>
+                  `"${o.title}" at ${formatMoney(o.amountMinor, o.currency)} is a genuine, compatible replacement part that would fix this fault on ${item.label}: ${topFault ?? note ?? "visible wear"}. It is NOT an ear pad, cushion, cover, case or cable when the fault is structural, and not a part for a different model.`,
+              }),
+            )
+            .catch(() => [] as RepairOffer[]),
+          searchOffers(replacementQuery, item, signal)
+            .then((offers) =>
+              fitOffers({
+                offers,
+                query: replacementQuery,
+                criteria: {
+                  true_description:
+                    "The listing is a complete new product of the same kind as the item (any comparable model of the same type and brand tier is acceptable).",
+                  false_description:
+                    "The listing is only a part, accessory, case, cover or cable, or a different kind of product.",
+                },
+                image,
+                signal,
+                statement: (o) =>
+                  `"${o.title}" at ${formatMoney(o.amountMinor, o.currency)} is a comparable whole new ${item.label}, not an accessory or a part.`,
+              }),
+            )
+            .catch(() => [] as RepairOffer[]),
         ]),
       );
       searchMs = s.ms;
@@ -419,14 +522,13 @@ export async function diagnoseRepair(params: {
         replacement = nearest;
       }
       const kept = validReplacement(replacement, part);
-      replacementDropped = replacement !== null && kept === null;
       replacement = kept;
     } catch {
       // query writing failed: leave part null -> abstain
     }
   }
 
-  const decision = decide({ damage, part, replacement, replacementDropped });
+  const decision = decide({ damage, part, replacement });
   const genericMatch = !item.modelReference?.trim();
 
   // On no_action the faults are below threshold: don't hand the writer damage to narrate.
