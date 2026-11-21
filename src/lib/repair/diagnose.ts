@@ -432,7 +432,6 @@ export async function diagnoseRepair(params: {
   // On no_action the faults are below threshold: don't hand the writer damage to narrate.
   const topFaultTexts =
     decision === "no_action" ? [] : ranked.slice(0, 3).map((f) => f.question);
-  let summary: string;
   let summaryFallback = false;
   const s = await timed(async () => {
     try {
@@ -456,7 +455,7 @@ export async function diagnoseRepair(params: {
       });
     }
   });
-  summary = s.value;
+  const summary = s.value;
 
   return {
     decision,
