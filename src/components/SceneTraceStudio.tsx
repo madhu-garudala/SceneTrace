@@ -814,6 +814,16 @@ export function SceneTraceStudio({
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
 
+      // Camera stills get the repair check started automatically, in the
+      // background, once offers are already on screen (damaged items first).
+      if (useCamera && workingItems.length > 0) {
+        const target = workingItems.find((it) => it.condition?.damageVisible) ?? workingItems[0];
+        const said = queuedDiagnoseRef.current;
+        queuedDiagnoseRef.current = null;
+        if (said !== null) void runRepair(target, said, true);
+        else void runRepair(target, target.condition?.signs.join("; ") || undefined);
+      }
+
       if (agentRun) {
         setStage("agent_investigating");
         setStageAnnouncement(
@@ -1327,6 +1337,8 @@ export function SceneTraceStudio({
   const [captureRequested, setCaptureRequested] = useState(false);
   const pendingVoiceTraceRef = useRef<string | null>(null);
   const [selectedOfferIdx, setSelectedOfferIdx] = useState(0);
+  // The offer voice is about to add, waiting on "yes" / "no, the other one".
+  const [pendingOffer, setPendingOffer] = useState<{ itemId: string; offerId: string; snapshot: Offer } | null>(null);
   const [repairState, setRepairState] = useState<{
     itemId: string;
     label: string;
@@ -1335,6 +1347,8 @@ export function SceneTraceStudio({
     error: string | null;
   } | null>(null);
   const repairRunRef = useRef(0);
+  // "It's broken" said before the item is found waits for the trace to finish.
+  const queuedDiagnoseRef = useRef<string | null>(null);
 
   const DEFAULT_VOICE_QUESTION = "What is this product and where can I buy it?";
 
@@ -1363,7 +1377,149 @@ export function SceneTraceStudio({
 
   useEffect(() => {
     setSelectedOfferIdx(0);
+    setPendingOffer(null);
   }, [activeItem?.itemId]);
+
+  const speakableTitle = (o: Offer) => {
+    const words = o.title.replace(/\([^)]*\)/g, " ").split(/\s+/).filter(Boolean);
+    return words.slice(0, 7).join(" ");
+  };
+  const askToAdd = (o: Offer, lead = "Add") => {
+    if (!activeItem) return;
+    setPendingOffer({ itemId: activeItem.itemId, offerId: o.offerId, snapshot: o });
+    return `${lead} ${speakableTitle(o)} from ${o.sellerName}?`;
+  };
+  /**
+   * Which offer does the shopper mean? Words shared by every offer ("sony",
+   * "headphones") say nothing, so each word counts by how few offers have it.
+   * Store names are matched on letters alone and loosely, because speech-to-text
+   * mangles them ("you green us" for UGREEN US).
+   */
+  const findOfferByWords = (text: string): number => {
+    if (!activeOffers.length) return -1;
+    const STOP = new Set(["the", "one", "that", "this", "with", "instead", "want", "like", "version", "can", "you", "add", "from", "please", "cart", "card", "bag", "buy", "get", "and", "for", "not", "its", "it's", "how", "about", "what"]);
+    const words = text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
+    const flat = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const hays = activeOffers.map((o) =>
+      `${o.title} ${o.sellerName} ${o.sellerDomain} ${o.condition ?? ""} ${o.options.map((op) => op.label).join(" ")}`.toLowerCase(),
+    );
+    const n = activeOffers.length;
+    const editDistance = (a: string, b: string) => {
+      const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+      for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = dp[j];
+          dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+          prev = tmp;
+        }
+      }
+      return dp[b.length];
+    };
+    const sellerScore = (seller: string) => {
+      const sFlat = seller.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (sFlat.length < 3) return 0;
+      if (flat.includes(sFlat)) return 3;
+      const L = sFlat.length;
+      const allowed = Math.max(1, Math.floor(L * 0.3));
+      for (let len = Math.max(3, L - 1); len <= L + 2; len++) {
+        for (let i = 0; i + len <= flat.length; i++) {
+          if (editDistance(flat.slice(i, i + len), sFlat) <= allowed) return 2;
+        }
+      }
+      return 0;
+    };
+    const scores = activeOffers.map((o, i) => {
+      let score = Math.max(sellerScore(o.sellerName), sellerScore(o.sellerDomain.split(".")[0] ?? ""));
+      for (const w of words) {
+        if (!hays[i].includes(w)) continue;
+        const df = hays.filter((h) => h.includes(w)).length;
+        score += 1 - df / n;
+      }
+      return score;
+    });
+    const best = Math.max(...scores);
+    if (best < 0.4) return -1;
+    const tops = scores.filter((x) => x === best).length;
+    return tops === 1 ? scores.indexOf(best) : -1;
+  };
+  const pendingOfferObj =
+    pendingOffer && activeItem && pendingOffer.itemId === activeItem.itemId
+      ? // The agent's re-rank replaces the offer list; keep the same product marked.
+        activeOffers.find((o) => o.offerId === pendingOffer.offerId) ??
+        activeOffers.find(
+          (o) =>
+            o.productId === pendingOffer.snapshot.productId &&
+            o.variantId === pendingOffer.snapshot.variantId,
+        ) ??
+        pendingOffer.snapshot
+      : null;
+
+  /** A description of one of the listed offers, answered without a server round trip. */
+  const ordinalIndex = (text: string): number => {
+    const t = text.toLowerCase();
+    const n = activeOffers.length;
+    if (/\b(second|2nd) (to )?last\b/.test(t)) return n - 2;
+    if (/\b(third|3rd) (to )?last\b/.test(t)) return n - 3;
+    if (/\blast\b/.test(t)) return n - 1;
+    const words: Record<string, number> = { first: 0, "1st": 0, top: 0, second: 1, "2nd": 1, third: 2, "3rd": 2, fourth: 3, "4th": 3, fifth: 4, "5th": 4, sixth: 5, "6th": 5 };
+    for (const [w, i] of Object.entries(words)) if (new RegExp(`\\b${w}\\b`).test(t)) return i;
+    const more: Record<string, number> = { seventh: 6, "7th": 6, eighth: 7, "8th": 7, ninth: 8, "9th": 8, tenth: 9, "10th": 9 };
+    for (const [w, i] of Object.entries(more)) if (new RegExp(`\\b${w}\\b`).test(t)) return i;
+    const NUM: Record<string, number> = { one: 1, two: 2, to: 2, too: 2, three: 3, four: 4, for: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+    const num = /\b(?:number|no\.?|#|option|offer)\s*(\d{1,2}|one|two|to|too|three|four|for|five|six|seven|eight|nine|ten)\b/.exec(t);
+    if (num) return (NUM[num[1]] ?? Number(num[1])) - 1;
+    // A bare digit said on its own ("5", "5 please").
+    const bare = /^\s*(?:the\s+)?(\d{1,2})\s*(?:one|please)?\s*$/.exec(t);
+    if (bare) return Number(bare[1]) - 1;
+    return -1;
+  };
+
+  const handleVoiceDescribe = (utterance: string): string | null => {
+    let idx = findOfferByWords(utterance);
+    if (idx < 0) {
+      const o = ordinalIndex(utterance);
+      if (o >= 0 && o < activeOffers.length) idx = o;
+    }
+    if (idx < 0 && /\bcheap(er|est)?\b|\blowest price\b|\bless expensive\b/i.test(utterance)) {
+      // Cheapest in the same currency as the top offer; cross-currency prices don't compare.
+      const cur = activeOffers[0]?.currency;
+      let bestPrice = Infinity;
+      activeOffers.forEach((o, i) => {
+        if (o.amountMinor != null && o.currency === cur && o.availability !== "unavailable" && o.amountMinor < bestPrice) {
+          bestPrice = o.amountMinor;
+          idx = i;
+        }
+      });
+    }
+    if (idx < 0) return null;
+    const o = activeOffers[idx];
+    if (o.offerId === pendingOfferObj?.offerId) return `Yes, ${speakableTitle(o)}. Add it?`;
+    setSelectedOfferIdx(idx);
+    return askToAdd(o, pendingOfferObj ? "How about" : "This one?") ?? null;
+  };
+
+  const handleVoiceConfirm = (yes: boolean, rest: string): string | void => {
+    const offer = pendingOfferObj;
+    if (yes) {
+      if (!offer) return;
+      setPendingOffer(null);
+      checkoutOffer(offer);
+      return "Added.";
+    }
+    if (rest) {
+      const idx = findOfferByWords(rest);
+      if (idx >= 0 && activeOffers[idx].offerId !== offer?.offerId) {
+        setSelectedOfferIdx(idx);
+        return askToAdd(activeOffers[idx], "How about");
+      }
+      setPendingOffer(null);
+      return "I don't see that one here. Say its number, or describe it.";
+    }
+    setPendingOffer(null);
+    return "Okay. Which one?";
+  };
 
   useEffect(() => {
     if (isHomeView) {
@@ -1399,7 +1555,7 @@ export function SceneTraceStudio({
     return null;
   };
 
-  const runRepair = async (item: TracedItem, note?: string) => {
+  const runRepair = async (item: TracedItem, note?: string, ownerReported = false) => {
     const runId = ++repairRunRef.current;
     setActiveItemId(item.itemId);
     setRepairState({ itemId: item.itemId, label: item.label, loading: true, verdict: null, error: null });
@@ -1409,7 +1565,7 @@ export function SceneTraceStudio({
       const res = await fetch("/api/traces/repair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...image, item, note: note?.slice(0, 500) }),
+        body: JSON.stringify({ ...image, item, note: note?.slice(0, 500), ownerReported }),
       });
       const body = (await res.json().catch(() => null)) as
         | (RepairVerdict & { error?: string; message?: string })
@@ -1442,7 +1598,48 @@ export function SceneTraceStudio({
       setCompanionFile(null);
       setCaptureRequested(true);
     },
-    trace: (spoken) => {
+    trace: (spoken, heard) => {
+      // Follow-up text searches ("search for monk fruit Red Bull") build on what
+      // is already found: a new result card next to the others, searched in
+      // Shopify directly (~10 s), no new photo and nothing thrown away.
+      const said = heard ?? spoken ?? "";
+      if (
+        said &&
+        items.length > 0 &&
+        traceId &&
+        /\b(search|look(?:ing)? for|find|look up|show me|get me)\b/i.test(said) &&
+        !/\b(camera|picture|photo|look at)\b/i.test(said)
+      ) {
+        const query = said
+          .replace(/[?.!,]/g, " ")
+          .replace(/\b(can|could|would|you|please|search|searching|for|look|looking|find|up|show|get|me|some|a|an|the|also|now|then|and|i|want|to|it|let's|lets)\b/gi, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        if (query.length >= 3) {
+          const parent = activeItem ?? items[0];
+          const label = query.replace(/\b\w/g, (c) => c.toUpperCase());
+          const followUp: TracedItem = {
+            ...parent,
+            itemId: `${parent.itemId}-q${Date.now().toString(36)}`,
+            label,
+            summary: `You asked for ${query}.`,
+            features: [],
+            modelReference: null,
+            condition: undefined,
+            searchQueries: [query, parent.brand && !query.toLowerCase().includes(parent.brand.toLowerCase()) ? `${parent.brand} ${query}` : `${query} ${parent.category}`],
+          };
+          setItems((prev) => [followUp, ...prev]);
+          setActiveItemId(followUp.itemId);
+          setPendingOffer(null);
+          void matchSingleItem({
+            activeTraceId: traceId,
+            targetItem: followUp,
+            itemFrames: [],
+            bypassCache: true,
+          });
+          return;
+        }
+      }
       const q = spoken?.trim() || question.trim() || DEFAULT_VOICE_QUESTION;
       if (inputSource === "camera") {
         // On the home screen with a still already taken, trace that still.
@@ -1460,39 +1657,61 @@ export function SceneTraceStudio({
       setQuestion(q);
       return handleTrace({ question: q });
     },
-    refine: (r) => {
-      const phrase = refinementPhrase(r);
-      if (!phrase) return;
-      const base = question.trim() || DEFAULT_VOICE_QUESTION;
-      const q = `${base}, ${phrase}`;
-      setQuestion(q);
-      return handleTrace({ question: q, bypassCache: true });
+    refine: async (r) => {
+      // "Is there a sugar-free version?" may already be on screen.
+      const local = r.text ? handleVoiceDescribe(r.text) : null;
+      if (local) return local;
+      const FILLER = /\b(is|are|there|actually|a|an|any|the|version|versions|of|on|in|this|that|it|do|does|you|have|can|could|find|show|me|i|want|get|one|ones|instead|please|maybe|something|like|looking|for|some)\b/gi;
+      const freeText = (r.text ?? "").replace(/[?.!,]/g, " ").replace(FILLER, " ").replace(/\s+/g, " ").trim();
+      const phrase = [refinementPhrase(r), freeText].filter(Boolean).join(", ");
+      if (!phrase) return "What should I change?";
+      const target = activeItem;
+      if (!target || !traceId) {
+        const q = `${question.trim() || DEFAULT_VOICE_QUESTION}, ${phrase}`;
+        setQuestion(q);
+        void handleTrace({ question: q, bypassCache: true });
+        return "Searching again.";
+      }
+      // Same item, new terms: re-run only the Shopify search (~10 s), not the photo.
+      const base = [target.brand, target.modelReference || target.label].filter(Boolean).join(" ");
+      const refined: TracedItem = {
+        ...target,
+        searchQueries: [`${base} ${phrase}`, `${target.label} ${phrase}`, ...target.searchQueries.slice(0, 2).map((q) => `${q} ${phrase}`)],
+      };
+      setItems((prev) => prev.map((it) => (it.itemId === target.itemId ? refined : it)));
+      setPendingOffer(null);
+      void matchSingleItem({
+        activeTraceId: traceId,
+        targetItem: refined,
+        itemFrames: framesByItem[target.itemId] ?? [],
+        bypassCache: true,
+      });
+      return `Looking for ${phrase}.`;
     },
     selectOffer: ({ index, description }) => {
       if (!activeOffers.length) return;
-      if (typeof index === "number" && index >= 1 && index <= activeOffers.length) {
-        setSelectedOfferIdx(index - 1);
+      let idx = -1;
+      if (typeof index === "number" && index >= 1 && index <= activeOffers.length) idx = index - 1;
+      else if (description) idx = findOfferByWords(description);
+      if (idx < 0) return "Which one? Say its number, or describe it.";
+      setSelectedOfferIdx(idx);
+      return askToAdd(activeOffers[idx], "This one?");
+    },
+    // Voice never buys blind: it marks the offer and asks first. Saying
+    // "add it" again while asked counts as yes.
+    checkout: () => {
+      if (pendingOfferObj) return handleVoiceConfirm(true, "");
+      const offer = activeOffers[selectedOfferIdx] ?? activeOffers[0];
+      if (!offer) return "Nothing to add yet.";
+      return askToAdd(offer);
+    },
+    diagnose: (note) => {
+      const said = note?.trim() || "The owner says it needs fixing.";
+      if (!activeItem) {
+        queuedDiagnoseRef.current = said;
         return;
       }
-      if (description) {
-        const words = description.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-        let best = -1;
-        let bestScore = 0;
-        activeOffers.forEach((o, i) => {
-          const hay = `${o.title} ${o.sellerName}`.toLowerCase();
-          const score = words.filter((w) => hay.includes(w)).length;
-          if (score > bestScore) {
-            best = i;
-            bestScore = score;
-          }
-        });
-        if (best >= 0) setSelectedOfferIdx(best);
-      }
-    },
-    checkout: () => checkoutOffer(activeOffers[selectedOfferIdx] ?? activeOffers[0]),
-    diagnose: (note) => {
-      if (!activeItem) return;
-      return runRepair(activeItem, note);
+      return runRepair(activeItem, said, true);
     },
     nextItem: () => {
       if (items.length > 1 && activeItem) {
@@ -1530,6 +1749,7 @@ export function SceneTraceStudio({
     hasItems: items.length > 0,
     hasOffers: activeOffers.length > 0,
     busy: isRunning || Boolean(repairState?.loading),
+    awaitingConfirm: Boolean(pendingOfferObj),
   };
 
   const repairOfferItem =
@@ -1569,7 +1789,12 @@ export function SceneTraceStudio({
         country={defaultCountry}
         currency={defaultCurrency}
         voiceSlot={
-          <VoiceBar context={voiceContext} onIntent={handleVoiceIntent} />
+          <VoiceBar
+            context={voiceContext}
+            onIntent={handleVoiceIntent}
+            onConfirm={handleVoiceConfirm}
+            onDescribe={handleVoiceDescribe}
+          />
         }
       />
 
@@ -1983,6 +2208,34 @@ export function SceneTraceStudio({
                     selectingVariantOfferId={selectingVariantOfferId}
                     variantErrorsByOffer={variantSelectErrorByOffer}
                     onSelectVariantOption={handleSelectVariantOption}
+                    highlightOfferId={
+                      pendingOfferObj && pendingOffer?.itemId === item.itemId
+                        ? pendingOfferObj.offerId
+                        : null
+                    }
+                    highlightSlot={
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-medium text-amber-700 dark:text-amber-300">
+                          Add this one to your bag?
+                        </span>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleVoiceConfirm(false, "")}
+                            className="rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-1 text-xs font-medium text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                          >
+                            No
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleVoiceConfirm(true, "")}
+                            className="rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 dark:bg-emerald-500 dark:text-neutral-950"
+                          >
+                            Yes, add it
+                          </button>
+                        </div>
+                      </div>
+                    }
                     onBuyOnShopify={(offer) =>
                       executeCheckout({
                         offerId: offer.offerId,

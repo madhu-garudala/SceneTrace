@@ -515,6 +515,11 @@ async function runStructuredExtraction(params: {
             ? IMAGE_EXTRACTION_JSON_SCHEMA
             : EXTRACTION_JSON_SCHEMA,
       },
+      // One still needs little deliberation; low thinking keeps camera
+      // traces responsive.
+      ...(params.source === "image"
+        ? { generation_config: { thinking_level: "low" } }
+        : {}),
     };
 
     const response = await fetch(INTERACTIONS_ENDPOINT, {

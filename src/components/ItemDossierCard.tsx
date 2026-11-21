@@ -55,6 +55,9 @@ export type ItemDossierCardProps = {
   }) => void;
   onBuyOnShopify: (offer: Offer) => void;
   country: string;
+  /** Offer voice is about to add, with its "Add this one?" prompt. */
+  highlightOfferId?: string | null;
+  highlightSlot?: React.ReactNode;
 };
 
 export function ItemDossierCard({
@@ -78,6 +81,8 @@ export function ItemDossierCard({
   onSelectVariantOption,
   onBuyOnShopify,
   country,
+  highlightOfferId = null,
+  highlightSlot,
 }: ItemDossierCardProps) {
   const [followUp, setFollowUp] = useState("");
   const [sandboxLogsOpen, setSandboxLogsOpen] = useState(false);
@@ -387,6 +392,8 @@ export function ItemDossierCard({
                 variantError={variantErrorsByOffer[offer.offerId]}
                 onSelectVariantOption={onSelectVariantOption}
                 onBuyOnShopify={onBuyOnShopify}
+                highlighted={highlightOfferId === offer.offerId}
+                highlightSlot={highlightSlot}
               />
             ))}
           </div>

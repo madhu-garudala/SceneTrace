@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, type ReactNode } from "react";
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -63,6 +64,10 @@ export type OfferCardProps = {
     optionValue: string;
   }) => void;
   onBuyOnShopify: (offer: Offer) => void;
+  /** The offer voice is about to add; marked and scrolled into view. */
+  highlighted?: boolean;
+  /** Rendered under a highlighted offer ("Add this one?" with yes / no). */
+  highlightSlot?: ReactNode;
 };
 
 export function OfferCard({
@@ -75,7 +80,15 @@ export function OfferCard({
   variantError,
   onSelectVariantOption,
   onBuyOnShopify,
+  highlighted = false,
+  highlightSlot,
 }: OfferCardProps) {
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!highlighted || !rootRef.current) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    rootRef.current.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+  }, [highlighted]);
   const badge = matchBadgeMeta(offer.matchLabel, offer.exactMatchYes);
   const isUnavailable = offer.availability === "unavailable";
   const wasPromotedToTop =
@@ -83,8 +96,11 @@ export function OfferCard({
 
   return (
     <div
+      ref={rootRef}
       className={`group relative rounded-2xl border bg-[var(--bg-panel)] p-4 transition-all ${
-        rankIndex === 0 && offer.matchLabel === "exact_supported"
+        highlighted
+          ? "border-amber-400 shadow-[0_0_0_3px_rgba(251,191,36,0.35)]"
+          : rankIndex === 0 && offer.matchLabel === "exact_supported"
           ? "border-emerald-500/40 shadow-sm"
           : "border-[var(--border-subtle)] hover:border-[var(--border-strong)]"
       }`}
@@ -98,6 +114,15 @@ export function OfferCard({
           className="relative h-28 w-28 shrink-0 overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-white"
           title="Open merchant product page"
         >
+          {/* Spoken handle: "the fifth one" / "number 5" picks this offer. */}
+          <span
+            aria-label={`Offer ${rankIndex + 1}`}
+            className={`absolute left-1.5 top-1.5 z-10 flex h-7 w-7 items-center justify-center rounded-full text-sm font-bold tabular-nums shadow ${
+              highlighted ? "bg-amber-400 text-neutral-950" : "bg-neutral-950/85 text-white"
+            }`}
+          >
+            {rankIndex + 1}
+          </span>
           {offer.imageUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
@@ -275,6 +300,11 @@ export function OfferCard({
           </div>
         </div>
       </div>
+      {highlighted && highlightSlot && (
+        <div className="mt-4 rounded-xl border border-amber-400/50 bg-amber-400/10 px-3 py-2.5">
+          {highlightSlot}
+        </div>
+      )}
     </div>
   );
 }

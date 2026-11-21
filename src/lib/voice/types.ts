@@ -36,6 +36,8 @@ export const VOICE_INTENTS: readonly VoiceIntent[] = [
 ] as const;
 
 export type VoiceSlots = {
+  /** The whole utterance as heard, for actions that read intent from wording. */
+  heard?: string;
   question?: string;
   maxPrice?: number;
   color?: string;
@@ -51,6 +53,8 @@ export type VoiceContext = {
   hasItems: boolean;
   hasOffers: boolean;
   busy: boolean;
+  /** The app has asked "Add this one?" and is waiting for yes / no. */
+  awaitingConfirm?: boolean;
 };
 
 /** POST /api/voice/intent  body: { utterance, context } */

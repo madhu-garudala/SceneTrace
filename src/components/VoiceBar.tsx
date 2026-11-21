@@ -9,7 +9,15 @@ import { createEchoGuard } from "@/lib/voice/echo";
 
 export type VoiceBarProps = {
   context: VoiceContext;
-  onIntent: (intent: VoiceIntent, slots: VoiceSlots) => void | Promise<void>;
+  /** May return what to say back; that replaces the generic reply for select/checkout. */
+  onIntent: (intent: VoiceIntent, slots: VoiceSlots) => string | void | Promise<string | void>;
+  /**
+   * Answer to "Add this one?". `rest` is whatever followed a no ("no, the
+   * sugar free one" gives "the sugar free one"). Returns what to say back.
+   */
+  onConfirm?: (yes: boolean, rest: string) => string | void | Promise<string | void>;
+  /** "the one from Craftedyogi": returns what to say if it names a listed offer, else null. */
+  onDescribe?: (utterance: string) => string | null;
   disabled?: boolean;
 };
 
@@ -60,7 +68,12 @@ const COOLDOWN_INTENTS = new Set<VoiceIntent>(["checkout", "diagnose", "trace", 
 const LOOP_COUNT = 3;
 const LOOP_WINDOW_MS = 10_000;
 
-export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
+const YES_RE = /^\s*(yes|yeah|yep|yup|sure|correct|right|perfect|do it|go ahead|add it|that one|sounds good|ok(?:ay)?)\b/i;
+const NO_RE = /^\s*(?:no|nope|nah|not (?:that|this)(?: one)?|wrong one|actually)\b[\s,.!]*(.*)$/i;
+
+const DESCRIBE_CUE_RE = /\b(one|from|version|instead|seller|store|shop|renewed|refurbished|cheaper|cheapest|other|first|second|third|fourth|fifth|sixth|last|number|option|\d+(?:st|nd|rd|th)?)\b/i;
+
+export function VoiceBar({ context, onIntent, onConfirm, onDescribe, disabled }: VoiceBarProps) {
   const [enabled, setEnabled] = useState(false);
   // The navbar's backdrop blur makes it the containing block for fixed
   // children, so the prompt strip is portalled to <body> to sit at the bottom.
@@ -75,11 +88,50 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
   contextRef.current = context;
   const onIntentRef = useRef(onIntent);
   onIntentRef.current = onIntent;
+  const onConfirmRef = useRef(onConfirm);
+  onConfirmRef.current = onConfirm;
+  const onDescribeRef = useRef(onDescribe);
+  onDescribeRef.current = onDescribe;
 
   const handleResult = useCallback(
     async (utterance: string) => {
       if (echo.current.isEcho(utterance)) return;
       stop(); // barge-in: anything the user says interrupts the app
+      const say = (text: string | void) => {
+        if (!text) return;
+        echo.current.remember(text);
+        void speak(text);
+      };
+
+      // While "Add this one?" is pending, yes/no is answered here: short
+      // answers are exactly what the server's noise gate is built to drop.
+      if (contextRef.current.awaitingConfirm && onConfirmRef.current) {
+        if (YES_RE.test(utterance)) {
+          say(await onConfirmRef.current(true, ""));
+          return;
+        }
+        const no = NO_RE.exec(utterance);
+        if (no) {
+          say(await onConfirmRef.current(false, (no[1] ?? "").trim()));
+          return;
+        }
+      }
+
+      // "the one from <store>" / "the renewed one": pick among the offers on
+      // screen locally. No round trip, and never mistaken for a new search.
+      if (
+        contextRef.current.hasOffers &&
+        onDescribeRef.current &&
+        (contextRef.current.awaitingConfirm || DESCRIBE_CUE_RE.test(utterance))
+      ) {
+        const answer = onDescribeRef.current(utterance);
+        if (answer) {
+          setLast({ intent: "select_offer", confidence: 1 });
+          say(answer);
+          return;
+        }
+      }
+
       let data: VoiceIntentResponse;
       try {
         const res = await fetch("/api/voice/intent", {
@@ -93,6 +145,13 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
         return;
       }
       setLast({ intent: data.intent, confidence: data.confidence });
+
+      // While "Add this one?" is open, don't throw the shopper into a new
+      // 30-second search because a description was misheard.
+      if (contextRef.current.awaitingConfirm && data.intent === "trace") {
+        say("Say yes, no, or which one you want.");
+        return;
+      }
 
       const now = Date.now();
       const recent = (history.current[data.intent] ?? []).filter((t) => now - t <= LOOP_WINDOW_MS);
@@ -109,11 +168,19 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
         lastRun.current[key] = now;
       }
 
-      if (data.reply && !looping) {
-        echo.current.remember(data.reply);
-        void speak(data.reply);
+      // Picking and buying answer with what was actually picked, so the app
+      // acts first and then says which one; everything else replies at once.
+      if (data.intent === "select_offer" || data.intent === "checkout" || data.intent === "refine") {
+        const slots =
+          data.intent === "refine"
+            ? { ...data.slots, question: data.slots?.question ?? data.slots?.description ?? data.heard }
+            : data.slots ?? {};
+        const answer = await onIntentRef.current(data.intent, slots);
+        if (!looping) say(answer || data.reply);
+        return;
       }
-      await onIntentRef.current(data.intent, data.slots ?? {});
+      if (data.reply && !looping) say(data.reply);
+      await onIntentRef.current(data.intent, { ...data.slots, heard: data.heard || utterance });
     },
     [speak, stop],
   );
