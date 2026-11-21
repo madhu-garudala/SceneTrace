@@ -6,6 +6,7 @@ import crypto from "node:crypto";
 export const ALLOWED_VIDEO_MODELS = [
   "gemini-4-neon",
   "gemini-4-carbon",
+  "gemini-4-argon",
 ] as const;
 
 export type AllowedVideoModel = (typeof ALLOWED_VIDEO_MODELS)[number];

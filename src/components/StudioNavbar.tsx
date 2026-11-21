@@ -29,6 +29,11 @@ const MODEL_META: Record<
     name: "Gemini 4 Carbon",
     desc: "Maximum multimodal reasoning depth",
   },
+  "gemini-4-argon": {
+    short: "Argon 4",
+    name: "Gemini 4 Argon",
+    desc: "Deepest frontier reasoning (slower)",
+  },
 };
 
 export type StudioNavbarProps = {

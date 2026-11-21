@@ -11,7 +11,7 @@ import {
 } from "@/lib/video/image-input";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 240;
 
 const EXTRACT_IMAGE_CACHE_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
 // JSON envelope headroom on top of the base64 image itself

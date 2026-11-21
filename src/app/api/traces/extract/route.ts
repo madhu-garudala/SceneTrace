@@ -12,7 +12,7 @@ import {
 } from "@/lib/video/youtube";
 
 export const runtime = "nodejs";
-export const maxDuration = 120;
+export const maxDuration = 240;
 
 const EXTRACT_CACHE_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
 
