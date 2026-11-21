@@ -190,19 +190,34 @@ const EXTRACTION_JSON_SCHEMA = {
   required: ["videoSummary", "shopperConstraints", "items"],
 } as const;
 
-function buildExtractionPrompt(question: string, retryHint?: string): string {
+export type ExtractionMediaSource = "video" | "image";
+
+function buildExtractionPrompt(
+  question: string,
+  source: ExtractionMediaSource,
+  retryHint?: string,
+): string {
+  const isImage = source === "image";
   return [
     "You are SceneTrace, a forensic multimodal product-identification analyst.",
-    "Analyze the full video (visual frames, close-ups, on-screen text/captions, and spoken audio) to answer the shopper's question.",
+    isImage
+      ? "Analyze the single still photo (visible products, close-up details, printed text, and logos) to answer the shopper's question."
+      : "Analyze the full video (visual frames, close-ups, on-screen text/captions, and spoken audio) to answer the shopper's question.",
     "",
     `Shopper question: "${question.trim()}"`,
     "",
     "Strict extraction rules:",
     "1. Return ONLY shoppable physical products relevant to the shopper's question (shoes, clothing, watches, bags, accessories, tech, home/desk items, or any retail product).",
-    "2. Cross-scene tracking: Merge multiple appearances across cuts into ONE item when visual/spoken evidence corroborates it is the same product. Keep two items SEPARATE if their model, colorway, or distinguishing details conflict.",
-    "3. Timestamp & box precision: All timestamps MUST be seconds from 0.0 at video start. Pick `bestEvidenceSec` inside one of the item's sightings at the sharpest close-up, and provide `bestBox2d` as `[ymin, xmin, ymax, xmax]` (0..1000 scale) around the product at `bestEvidenceSec` when visible.",
+    isImage
+      ? "2. Distinct products: Report each distinct product in the photo once. Keep two items SEPARATE if their model, colorway, or distinguishing details conflict."
+      : "2. Cross-scene tracking: Merge multiple appearances across cuts into ONE item when visual/spoken evidence corroborates it is the same product. Keep two items SEPARATE if their model, colorway, or distinguishing details conflict.",
+    isImage
+      ? "3. Still photo timing & box precision: This is a single still image, so set every timestamp (`startSec`, `endSec`, `evidenceSec`, `bestEvidenceSec`, `atSec`) to 0 and return exactly one sighting per item. Provide `bestBox2d` as `[ymin, xmin, ymax, xmax]` (0..1000 scale) tightly around the product in the photo."
+      : "3. Timestamp & box precision: All timestamps MUST be seconds from 0.0 at video start. Pick `bestEvidenceSec` inside one of the item's sightings at the sharpest close-up, and provide `bestBox2d` as `[ymin, xmin, ymax, xmax]` (0..1000 scale) around the product at `bestEvidenceSec` when visible.",
     "4. Honest uncertainty: Set `brand` or `modelReference` to \"\" unless directly visible in frame, clearly spoken, or unmistakable from signature markings. Never invent serial numbers.",
-    "5. Provenance: Mark every feature strictly as `visible`, `spoken`, or `inferred`.",
+    isImage
+      ? "5. Provenance: Mark every feature strictly as `visible` or `inferred` (a still photo has no audio, so never `spoken`)."
+      : "5. Provenance: Mark every feature strictly as `visible`, `spoken`, or `inferred`.",
     "6. Shopper constraints: Populate `shopperConstraints` ONLY when the shopper explicitly stated a budget (e.g., 'under $50'), size (e.g., 'size 10'), or color filter in their question.",
     "7. Search queries: Provide 2–3 clean Shopify catalog search strings per item (no filler words like 'buy' or 'best').",
     retryHint ? `\nIMPORTANT CORRECTION FOR RETRY: ${retryHint}` : "",
@@ -272,7 +287,12 @@ function parseConstraints(raw: unknown): ShopperConstraints | undefined {
  */
 export function normalizeRawExtractionPayload(
   rawPayload: unknown,
-  options?: { clipStartOffsetSec?: number; videoDurationSec?: number },
+  options?: {
+    clipStartOffsetSec?: number;
+    videoDurationSec?: number;
+    /** Single still photo: pin every timestamp to 0 and keep one sighting. */
+    stillImage?: boolean;
+  },
 ): {
   videoSummary: string;
   items: TracedItem[];
@@ -292,6 +312,9 @@ export function normalizeRawExtractionPayload(
 
   const offset = options?.clipStartOffsetSec ?? 0;
   const maxDur = options?.videoDurationSec;
+  const stillImage = Boolean(options?.stillImage);
+  const toSec = (sec: number) =>
+    stillImage ? 0 : mapClipTimestampToOriginal(sec, offset, maxDur);
 
   const normalizedItems: TracedItem[] = [];
   let droppedItemCount = 0;
@@ -304,14 +327,11 @@ export function normalizeRawExtractionPayload(
     }
 
     const raw = parsedItem.data;
-    const sightings = raw.sightings
+    const sightings = (stillImage ? raw.sightings.slice(0, 1) : raw.sightings)
       .map((s) => {
-        const start = mapClipTimestampToOriginal(s.startSec, offset, maxDur);
-        const end = Math.max(
-          start,
-          mapClipTimestampToOriginal(s.endSec, offset, maxDur),
-        );
-        const evRaw = mapClipTimestampToOriginal(s.evidenceSec, offset, maxDur);
+        const start = toSec(s.startSec);
+        const end = Math.max(start, toSec(s.endSec));
+        const evRaw = toSec(s.evidenceSec);
         const evidenceSec = Math.min(Math.max(evRaw, start), end);
         return {
           startSec: start,
@@ -326,11 +346,7 @@ export function normalizeRawExtractionPayload(
     const maxSightingEnd =
       sightings[sightings.length - 1]?.endSec ?? raw.bestEvidenceSec;
 
-    const mappedBest = mapClipTimestampToOriginal(
-      raw.bestEvidenceSec,
-      offset,
-      maxDur,
-    );
+    const mappedBest = toSec(raw.bestEvidenceSec);
     const bestEvidenceSec = Math.min(
       Math.max(mappedBest, minSightingStart),
       Math.max(minSightingStart, maxSightingEnd),
@@ -339,7 +355,7 @@ export function normalizeRawExtractionPayload(
     const features = raw.features.map((f) => ({
       name: f.name.trim(),
       value: f.value.trim(),
-      atSec: mapClipTimestampToOriginal(f.atSec, offset, maxDur),
+      atSec: toSec(f.atSec),
       source: f.source,
     }));
 
@@ -391,16 +407,22 @@ class ExtractionPayloadParseError extends Error {
   }
 }
 
-export async function extractItemsFromYouTube(params: {
-  canonicalYoutubeUrl: string;
-  question: string;
-  requestedModel?: string | null;
-  clipStartOffsetSec?: number;
-  videoDurationSec?: number;
-}): Promise<{
+type ExtractionResult = {
   items: TracedItem[];
   diagnostics: ExtractDiagnostics;
-}> {
+};
+
+/**
+ * Shared Gemini Interactions call for every media source: same JSON schema,
+ * prompt framing, parse-retry budget, and per-item normalization.
+ */
+async function runStructuredExtraction(params: {
+  source: ExtractionMediaSource;
+  mediaPart: Record<string, unknown>;
+  question: string;
+  requestedModel?: string | null;
+  normalizeOptions?: Parameters<typeof normalizeRawExtractionPayload>[1];
+}): Promise<ExtractionResult> {
   const apiKey = getGeminiApiKey();
   const model = resolveVideoModel(params.requestedModel);
   const startedAt = Date.now();
@@ -411,14 +433,10 @@ export async function extractItemsFromYouTube(params: {
     const requestBody = {
       model,
       input: [
-        {
-          type: "video",
-          uri: params.canonicalYoutubeUrl,
-          mime_type: "video/mp4",
-        },
+        params.mediaPart,
         {
           type: "text",
-          text: buildExtractionPrompt(params.question, retryHint),
+          text: buildExtractionPrompt(params.question, params.source, retryHint),
         },
       ],
       response_format: {
@@ -452,7 +470,7 @@ export async function extractItemsFromYouTube(params: {
         // keep raw snippet
       }
       throw new Error(
-        `Gemini video analysis failed (${response.status}): ${providerMessage}`,
+        `Gemini ${params.source} analysis failed (${response.status}): ${providerMessage}`,
       );
     }
 
@@ -470,10 +488,10 @@ export async function extractItemsFromYouTube(params: {
 
     let normalized: ReturnType<typeof normalizeRawExtractionPayload>;
     try {
-      normalized = normalizeRawExtractionPayload(parsedJson, {
-        clipStartOffsetSec: params.clipStartOffsetSec,
-        videoDurationSec: params.videoDurationSec,
-      });
+      normalized = normalizeRawExtractionPayload(
+        parsedJson,
+        params.normalizeOptions,
+      );
     } catch (e) {
       throw new ExtractionPayloadParseError(
         e instanceof Error ? e.message : "Invalid extraction JSON shape.",
@@ -521,4 +539,46 @@ export async function extractItemsFromYouTube(params: {
       droppedItemCount: result.droppedItemCount,
     },
   };
+}
+
+export async function extractItemsFromYouTube(params: {
+  canonicalYoutubeUrl: string;
+  question: string;
+  requestedModel?: string | null;
+  clipStartOffsetSec?: number;
+  videoDurationSec?: number;
+}): Promise<ExtractionResult> {
+  return runStructuredExtraction({
+    source: "video",
+    mediaPart: {
+      type: "video",
+      uri: params.canonicalYoutubeUrl,
+      mime_type: "video/mp4",
+    },
+    question: params.question,
+    requestedModel: params.requestedModel,
+    normalizeOptions: {
+      clipStartOffsetSec: params.clipStartOffsetSec,
+      videoDurationSec: params.videoDurationSec,
+    },
+  });
+}
+
+export async function extractItemsFromImage(params: {
+  imageBase64: string;
+  mimeType: string;
+  question: string;
+  requestedModel?: string | null;
+}): Promise<ExtractionResult> {
+  return runStructuredExtraction({
+    source: "image",
+    mediaPart: {
+      type: "image",
+      data: params.imageBase64,
+      mime_type: params.mimeType,
+    },
+    question: params.question,
+    requestedModel: params.requestedModel,
+    normalizeOptions: { stillImage: true },
+  });
 }

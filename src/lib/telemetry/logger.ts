@@ -2,6 +2,7 @@ export type ServerSpanEvent = {
   traceId: string;
   span:
     | "video.extract"
+    | "image.extract"
     | "agent.investigate"
     | "shop.retrieve_and_rank"
     | "shop.select_variant"
