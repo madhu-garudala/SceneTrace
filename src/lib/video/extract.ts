@@ -404,8 +404,10 @@ export async function extractItemsFromYouTube(params: {
   const apiKey = getGeminiApiKey();
   const model = resolveVideoModel(params.requestedModel);
   const startedAt = Date.now();
-  // Single shared 105s ceiling across initial call + any parse retry (inside Vercel's 120s maxDuration)
-  const sharedDeadline = AbortSignal.timeout(105_000);
+  const totalBudgetMs = model === "gemini-4-argon" ? 210_000 : 105_000;
+  const attemptTimeoutMs = model === "gemini-4-argon" ? 190_000 : 78_000;
+  // Single shared ceiling across initial call + any parse retry (inside Vercel's Fluid Compute maxDuration)
+  const sharedDeadline = AbortSignal.timeout(totalBudgetMs);
 
   const invokeOnce = async (retryHint?: string) => {
     const requestBody = {
@@ -435,7 +437,10 @@ export async function extractItemsFromYouTube(params: {
         "x-goog-api-key": apiKey,
       },
       body: JSON.stringify(requestBody),
-      signal: AbortSignal.any([sharedDeadline, AbortSignal.timeout(78_000)]),
+      signal: AbortSignal.any([
+        sharedDeadline,
+        AbortSignal.timeout(attemptTimeoutMs),
+      ]),
     });
 
     const rawText = await response.text();
@@ -495,7 +500,7 @@ export async function extractItemsFromYouTube(params: {
   try {
     result = await invokeOnce();
   } catch (firstErr) {
-    const remainingBudgetMs = 105_000 - (Date.now() - startedAt);
+    const remainingBudgetMs = totalBudgetMs - (Date.now() - startedAt);
     const canRetryParse =
       firstErr instanceof ExtractionPayloadParseError &&
       !sharedDeadline.aborted &&

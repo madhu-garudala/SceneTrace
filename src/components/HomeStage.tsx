@@ -1,9 +1,8 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
-  CheckCircle2,
   Film,
   Link2,
   Loader2,
@@ -92,28 +91,63 @@ export function HomeStage({
 }: HomeStageProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [clipMeta, setClipMeta] = useState<{
+    videoId: string;
+    title: string;
+    author: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!liveUrlPreview) {
+      setClipMeta(null);
+      return;
+    }
+    const controller = new AbortController();
+    fetch(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(liveUrlPreview.canonicalUrl)}&format=json`,
+      { signal: controller.signal },
+    )
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { title?: string; author_name?: string } | null) => {
+        if (data?.title) {
+          setClipMeta({
+            videoId: liveUrlPreview.videoId,
+            title: data.title,
+            author: data.author_name ?? "YouTube",
+          });
+        }
+      })
+      .catch(() => {
+        // Silent fallback if oEmbed is unreachable
+      });
+    return () => controller.abort();
+  }, [liveUrlPreview]);
+
+  const activeMeta =
+    clipMeta && liveUrlPreview && clipMeta.videoId === liveUrlPreview.videoId
+      ? clipMeta
+      : null;
 
   return (
     <div className="ambient-stage min-h-[calc(100vh-4rem)]">
       <div className="mx-auto max-w-4xl px-4 pb-20 pt-10 sm:px-6 sm:pt-16">
         {/* Editorial Hero Headline */}
         <div className="mx-auto max-w-2xl text-center">
-          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3.5 py-1 text-[11px] font-medium text-[var(--ink-secondary)] shadow-2xs">
+          <div className="inline-flex items-center gap-2 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3.5 py-1 text-[11px] font-medium tracking-wide text-[var(--ink-secondary)] shadow-2xs">
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            <span>Scene-level product discovery · Live Shopify checkout</span>
+            <span>Gemini 4 × Shopify</span>
           </div>
 
           <h1 className="mt-5 text-4xl font-semibold tracking-tight text-[var(--ink-primary)] sm:text-5xl sm:leading-[1.08]">
-            Spot it in the scene.{" "}
+            Pause the scene.{" "}
             <span className="font-[family-name:var(--font-serif)] font-normal italic text-amber-600 dark:text-amber-300">
-              Own the exact piece.
+              Shop the frame.
             </span>
           </h1>
 
-          <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-[var(--ink-secondary)] sm:text-base">
-            Paste any public YouTube video or Short. SceneTrace tracks items
-            across cuts, verifies exact SKUs in a sandboxed agent, and ranks
-            live Shopify offers you can buy immediately.
+          <p className="mx-auto mt-4 max-w-lg text-sm leading-relaxed text-[var(--ink-secondary)] sm:text-base">
+            Drop any YouTube clip, ask about the watch, kicks, or gear on
+            screen, and check out the exact match on Shopify.
           </p>
         </div>
 
@@ -137,12 +171,6 @@ export function HomeStage({
               aria-label="Public YouTube URL"
               className="w-full bg-transparent text-sm text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:outline-none"
             />
-            {liveUrlPreview && (
-              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/12 px-2.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
-                <CheckCircle2 className="h-3 w-3" />
-                {liveUrlPreview.videoId}
-              </span>
-            )}
           </div>
 
           {/* Instant Live Video Thumbnail Preview when valid URL is pasted */}
@@ -157,10 +185,12 @@ export function HomeStage({
                 />
                 <div className="min-w-0">
                   <div className="truncate text-xs font-medium text-[var(--ink-primary)]">
-                    Clip ready for scene analysis
+                    {activeMeta ? activeMeta.title : "Clip ready to trace"}
                   </div>
-                  <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                    {liveUrlPreview.canonicalUrl}
+                  <div className="truncate text-[11px] text-[var(--ink-muted)]">
+                    {activeMeta
+                      ? activeMeta.author
+                      : "Ready for frame-by-frame search"}
                   </div>
                 </div>
               </div>
