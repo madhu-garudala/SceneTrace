@@ -51,6 +51,8 @@ export type VoiceContext = {
   hasItems: boolean;
   hasOffers: boolean;
   busy: boolean;
+  /** The app has asked "Add this one?" and is waiting for yes / no. */
+  awaitingConfirm?: boolean;
 };
 
 /** POST /api/voice/intent  body: { utterance, context } */

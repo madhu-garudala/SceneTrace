@@ -814,6 +814,13 @@ export function SceneTraceStudio({
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
 
+      // Camera stills that show visible damage get the repair check started
+      // automatically, in the background, once offers are already on screen.
+      if (useCamera) {
+        const damaged = workingItems.find((it) => it.condition?.damageVisible);
+        if (damaged) void runRepair(damaged, damaged.condition?.signs.join("; "));
+      }
+
       if (agentRun) {
         setStage("agent_investigating");
         setStageAnnouncement(
@@ -1327,6 +1334,8 @@ export function SceneTraceStudio({
   const [captureRequested, setCaptureRequested] = useState(false);
   const pendingVoiceTraceRef = useRef<string | null>(null);
   const [selectedOfferIdx, setSelectedOfferIdx] = useState(0);
+  // The offer voice is about to add, waiting on "yes" / "no, the other one".
+  const [pendingOffer, setPendingOffer] = useState<{ itemId: string; offerId: string } | null>(null);
   const [repairState, setRepairState] = useState<{
     itemId: string;
     label: string;
@@ -1363,7 +1372,58 @@ export function SceneTraceStudio({
 
   useEffect(() => {
     setSelectedOfferIdx(0);
+    setPendingOffer(null);
   }, [activeItem?.itemId]);
+
+  const speakableTitle = (o: Offer) => {
+    const words = o.title.replace(/\([^)]*\)/g, " ").split(/\s+/).filter(Boolean);
+    return words.slice(0, 7).join(" ");
+  };
+  const askToAdd = (o: Offer, lead = "Add") => {
+    if (!activeItem) return;
+    setPendingOffer({ itemId: activeItem.itemId, offerId: o.offerId });
+    return `${lead} ${speakableTitle(o)} from ${o.sellerName}?`;
+  };
+  const findOfferByWords = (text: string): number => {
+    const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 2 && !["the", "one", "that", "with", "instead", "want", "like", "version"].includes(w));
+    if (!words.length) return -1;
+    let best = -1;
+    let bestScore = 0;
+    activeOffers.forEach((o, i) => {
+      const hay = `${o.title} ${o.sellerName} ${o.options.map((op) => op.label).join(" ")}`.toLowerCase();
+      const score = words.filter((w) => hay.includes(w)).length;
+      if (score > bestScore) {
+        best = i;
+        bestScore = score;
+      }
+    });
+    return best;
+  };
+  const pendingOfferObj =
+    pendingOffer && activeItem && pendingOffer.itemId === activeItem.itemId
+      ? activeOffers.find((o) => o.offerId === pendingOffer.offerId) ?? null
+      : null;
+
+  const handleVoiceConfirm = (yes: boolean, rest: string): string | void => {
+    const offer = pendingOfferObj;
+    if (yes) {
+      if (!offer) return;
+      setPendingOffer(null);
+      checkoutOffer(offer);
+      return "Added.";
+    }
+    if (rest) {
+      const idx = findOfferByWords(rest);
+      if (idx >= 0 && activeOffers[idx].offerId !== offer?.offerId) {
+        setSelectedOfferIdx(idx);
+        return askToAdd(activeOffers[idx], "How about");
+      }
+      setPendingOffer(null);
+      return "I don't see that one here. Say its number, or describe it.";
+    }
+    setPendingOffer(null);
+    return "Okay. Which one?";
+  };
 
   useEffect(() => {
     if (isHomeView) {
@@ -1470,26 +1530,21 @@ export function SceneTraceStudio({
     },
     selectOffer: ({ index, description }) => {
       if (!activeOffers.length) return;
-      if (typeof index === "number" && index >= 1 && index <= activeOffers.length) {
-        setSelectedOfferIdx(index - 1);
-        return;
-      }
-      if (description) {
-        const words = description.toLowerCase().split(/\W+/).filter((w) => w.length > 2);
-        let best = -1;
-        let bestScore = 0;
-        activeOffers.forEach((o, i) => {
-          const hay = `${o.title} ${o.sellerName}`.toLowerCase();
-          const score = words.filter((w) => hay.includes(w)).length;
-          if (score > bestScore) {
-            best = i;
-            bestScore = score;
-          }
-        });
-        if (best >= 0) setSelectedOfferIdx(best);
-      }
+      let idx = -1;
+      if (typeof index === "number" && index >= 1 && index <= activeOffers.length) idx = index - 1;
+      else if (description) idx = findOfferByWords(description);
+      if (idx < 0) return "Which one? Say its number, or describe it.";
+      setSelectedOfferIdx(idx);
+      return askToAdd(activeOffers[idx], "This one?");
     },
-    checkout: () => checkoutOffer(activeOffers[selectedOfferIdx] ?? activeOffers[0]),
+    // Voice never buys blind: it marks the offer and asks first. Saying
+    // "add it" again while asked counts as yes.
+    checkout: () => {
+      if (pendingOfferObj) return handleVoiceConfirm(true, "");
+      const offer = activeOffers[selectedOfferIdx] ?? activeOffers[0];
+      if (!offer) return "Nothing to add yet.";
+      return askToAdd(offer);
+    },
     diagnose: (note) => {
       if (!activeItem) return;
       return runRepair(activeItem, note);
@@ -1530,6 +1585,7 @@ export function SceneTraceStudio({
     hasItems: items.length > 0,
     hasOffers: activeOffers.length > 0,
     busy: isRunning || Boolean(repairState?.loading),
+    awaitingConfirm: Boolean(pendingOfferObj),
   };
 
   const repairOfferItem =
@@ -1569,7 +1625,11 @@ export function SceneTraceStudio({
         country={defaultCountry}
         currency={defaultCurrency}
         voiceSlot={
-          <VoiceBar context={voiceContext} onIntent={handleVoiceIntent} />
+          <VoiceBar
+            context={voiceContext}
+            onIntent={handleVoiceIntent}
+            onConfirm={handleVoiceConfirm}
+          />
         }
       />
 

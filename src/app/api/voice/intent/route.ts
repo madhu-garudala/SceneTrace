@@ -14,6 +14,7 @@ const BodySchema = z.object({
     hasItems: z.boolean(),
     hasOffers: z.boolean(),
     busy: z.boolean(),
+    awaitingConfirm: z.boolean().optional(),
   }),
 });
 

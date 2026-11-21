@@ -12,9 +12,10 @@ export type VoiceActions = {
   trace: (question?: string) => void | Promise<void>;
   /** Narrow the search — budget, colour, size. */
   refine: (refinement: { maxPrice?: number; color?: string; size?: string }) => void | Promise<void>;
-  selectOffer: (selection: { index?: number; description?: string }) => void;
+  /** May return what to say back (e.g. "This one? ..."). */
+  selectOffer: (selection: { index?: number; description?: string }) => string | void;
   /** Buy. Buying is the default path; it never waits on a diagnosis. */
-  checkout: () => void | Promise<void>;
+  checkout: () => string | void | Promise<string | void>;
   /** The repair check — only ever run when asked for. */
   diagnose: (note?: string) => void | Promise<void>;
   nextItem: () => void;
@@ -40,7 +41,7 @@ export async function dispatchVoiceIntent(
   intent: VoiceIntent,
   slots: VoiceSlots,
   actions: VoiceActions,
-): Promise<void> {
+): Promise<string | void> {
   switch (intent) {
     case "switch_to_camera":
       return actions.switchSource("camera");
