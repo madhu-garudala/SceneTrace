@@ -12,6 +12,21 @@ export type VoiceBarProps = {
   disabled?: boolean;
 };
 
+const INTENT_LABELS: Record<VoiceIntent, string> = {
+  switch_to_camera: "Camera",
+  switch_to_youtube: "YouTube",
+  capture: "Capture",
+  trace: "Trace",
+  refine: "Refine",
+  select_offer: "Select offer",
+  checkout: "Checkout",
+  next_item: "Next item",
+  show_evidence: "Evidence",
+  stop: "Stop",
+  diagnose: "Diagnose",
+  unknown: "Unknown",
+};
+
 const LOOP_COUNT = 3;
 const LOOP_WINDOW_MS = 10_000;
 
@@ -141,7 +156,7 @@ export function VoiceBar({ context, onIntent, disabled }: VoiceBarProps) {
           className="hidden shrink-0 items-center gap-1 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[10px] font-semibold text-[var(--ink-secondary)] lg:inline-flex"
           title="Intent routed by the Decisions API"
         >
-          {last.intent}
+          {INTENT_LABELS[last.intent] ?? last.intent}
           <span className="text-emerald-500">{Math.round(last.confidence * 100)}%</span>
         </span>
       )}
