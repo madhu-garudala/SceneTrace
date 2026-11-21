@@ -62,6 +62,7 @@ export type ManagedAgentReport = {
   interactionId: string;
   environmentId: string | null;
   durationMs: number;
+  cacheHit?: boolean;
   resolvedBrand: string | null;
   resolvedReference: string | null;
   msrpEstimate: string | null;
@@ -153,6 +154,7 @@ export type ItemMatchDiagnostics = {
   itemId: string;
   shopLive: boolean;
   decisionsLive: boolean;
+  cacheHit?: boolean;
   evidenceMode: EvidenceMode;
   decisionModel: string;
   candidateCount: number;
@@ -169,6 +171,7 @@ export type ItemMatchDiagnostics = {
 export type ExtractDiagnostics = {
   videoModel: string;
   geminiLive: boolean;
+  cacheHit?: boolean;
   durationMs: number;
   videoSummary: string;
   totalTokens: number | null;

@@ -84,7 +84,8 @@ export function DiagnosticsDrawer({
                   <div className="flex items-center justify-between font-[family-name:var(--font-mono)] text-[10px] uppercase text-[var(--ink-muted)]">
                     <span>1. Video Extraction</span>
                     <span className="inline-flex items-center gap-1 text-emerald-500">
-                      <Check className="h-3 w-3" /> LIVE
+                      <Check className="h-3 w-3" />{" "}
+                      {extractDiagnostics.cacheHit ? "CACHED" : "LIVE"}
                     </span>
                   </div>
                   <div className="mt-1 font-[family-name:var(--font-mono)] text-sm font-semibold text-[var(--ink-primary)]">
@@ -111,7 +112,11 @@ export function DiagnosticsDrawer({
                           : "text-[var(--ink-muted)]"
                       }
                     >
-                      {agentAnyLive ? "LIVE · REMOTE SANDBOX" : "STANDBY"}
+                      {agentAnyLive
+                        ? allAgentReports.every((r) => r.cacheHit)
+                          ? "CACHED · SANDBOX"
+                          : "LIVE · REMOTE SANDBOX"
+                        : "STANDBY"}
                     </span>
                   </div>
                   <div className="mt-1 font-[family-name:var(--font-mono)] text-sm font-semibold text-[var(--ink-primary)]">

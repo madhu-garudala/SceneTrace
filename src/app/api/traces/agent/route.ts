@@ -1,15 +1,20 @@
+import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { runManagedAgentInvestigation } from "@/lib/agent/managed-agent";
+import { buildCacheKey, withServerCache } from "@/lib/cache/store";
 import type { EvidenceFrame, TracedItem } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+const AGENT_CACHE_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
+
 const AgentRequestSchema = z.object({
   question: z.string().min(1).max(500),
   followUpPrompt: z.string().max(400).optional(),
   previousInteractionId: z.string().max(240).nullable().optional(),
+  bypassCache: z.boolean().optional().default(false),
   item: z.object({
     itemId: z.string().min(1).max(120),
     category: z.string().min(1).max(120),
@@ -27,7 +32,10 @@ const AgentRequestSchema = z.object({
       .min(1)
       .max(12),
     bestEvidenceSec: z.number().finite().min(0),
-    bestBox2d: z.tuple([z.number(), z.number(), z.number(), z.number()]).nullable().optional(),
+    bestBox2d: z
+      .tuple([z.number(), z.number(), z.number(), z.number()])
+      .nullable()
+      .optional(),
     features: z
       .array(
         z.object({
@@ -84,16 +92,52 @@ export async function POST(request: Request) {
 
     const item: TracedItem = parsed.data.item;
     const primaryFrame: EvidenceFrame | null = parsed.data.primaryFrame ?? null;
+    const frameDigest = primaryFrame?.dataBase64
+      ? crypto
+          .createHash("sha256")
+          .update(primaryFrame.dataBase64)
+          .digest("hex")
+          .slice(0, 16)
+      : "no_frame";
 
-    const result = await runManagedAgentInvestigation({
-      item,
-      question: parsed.data.question,
-      followUpPrompt: parsed.data.followUpPrompt,
-      previousInteractionId: parsed.data.previousInteractionId,
-      primaryFrame,
+    const cacheKey = buildCacheKey("agent_v1", {
+      label: item.label.trim().toLowerCase(),
+      brand: item.brand?.toLowerCase() ?? null,
+      ref: item.modelReference?.toLowerCase() ?? null,
+      queries: item.searchQueries,
+      question: parsed.data.question.trim().toLowerCase(),
+      followUp: parsed.data.followUpPrompt?.trim().toLowerCase() ?? "",
+      prevInteraction: parsed.data.previousInteractionId ?? "",
+      frameDigest,
     });
 
-    return NextResponse.json(result, { status: 200 });
+    const { value: cachedOrFresh, cacheHit } = await withServerCache({
+      key: cacheKey,
+      ttlMs: AGENT_CACHE_TTL_MS,
+      bypass: parsed.data.bypassCache,
+      compute: () =>
+        runManagedAgentInvestigation({
+          item,
+          question: parsed.data.question,
+          followUpPrompt: parsed.data.followUpPrompt,
+          previousInteractionId: parsed.data.previousInteractionId,
+          primaryFrame,
+        }),
+    });
+
+    return NextResponse.json(
+      {
+        report: {
+          ...cachedOrFresh.report,
+          cacheHit,
+        },
+        updatedItem: {
+          ...cachedOrFresh.updatedItem,
+          itemId: item.itemId,
+        },
+      },
+      { status: 200 },
+    );
   } catch (err) {
     const message =
       err instanceof Error

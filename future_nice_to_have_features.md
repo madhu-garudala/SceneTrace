@@ -7,7 +7,7 @@ Roadmap items intentionally deferred past the initial hackathon build so we prio
 - **Benefits**:
   - Eliminates Vercel's 4.5 MB serverless request payload ceiling, allowing direct high-bitrate clip or multi-frame uploads when needed.
   - Supports longer streaming HTTP timeouts (up to 60 minutes on Cloud Run) for deep multi-minute video forensics and extended Managed Agent sandbox sessions.
-  - Consolidates IAM, Secret Manager credentials, Cloud Logging, and Vertex/AI Studio billing under a single GCP project.
+  - Consolidates IAM, Secret Manager credentials, **Google Cloud Trace (OpenTelemetry span waterfalls across Gemini 4, Managed Agents, Shop MCP, and Decisions)**, Cloud Logging, and Vertex/AI Studio billing under a single GCP project.
 
 ## 2. Voice Interactivity (Hands-Free Conversational Shopping)
 - **Goal**: Let shoppers talk naturally to SceneTrace while watching a clip — e.g., *"What jacket is he wearing right now, and can you find it in medium under $120?"* — and hear concise spoken answers while offers update live on screen.

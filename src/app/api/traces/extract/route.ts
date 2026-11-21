@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { buildCacheKey, withServerCache } from "@/lib/cache/store";
+import { resolveVideoModel } from "@/lib/env";
 import type { ExtractResponse } from "@/lib/types";
 import { extractItemsFromYouTube } from "@/lib/video/extract";
 import {
@@ -11,6 +13,8 @@ import {
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
+const EXTRACT_CACHE_TTL_MS = 1000 * 60 * 60 * 2; // 2 hours
+
 const ExtractRequestSchema = z.object({
   youtubeUrl: z.string().min(1).max(2048),
   question: z
@@ -19,6 +23,7 @@ const ExtractRequestSchema = z.object({
     .min(3, "Please enter a question about the products in the video.")
     .max(500),
   videoModel: z.string().max(80).optional(),
+  bypassCache: z.boolean().optional().default(false),
 });
 
 export async function POST(request: Request) {
@@ -33,11 +38,23 @@ export async function POST(request: Request) {
     const normalizedVideo = parseAndNormalizeYouTubeUrl(
       parsed.data.youtubeUrl,
     );
+    const effectiveModel = resolveVideoModel(parsed.data.videoModel);
+    const cacheKey = buildCacheKey("extract_v1", {
+      videoId: normalizedVideo.videoId,
+      question: parsed.data.question.trim().toLowerCase(),
+      model: effectiveModel,
+    });
 
-    const { items, diagnostics } = await extractItemsFromYouTube({
-      canonicalYoutubeUrl: normalizedVideo.canonicalUrl,
-      question: parsed.data.question,
-      requestedModel: parsed.data.videoModel,
+    const { value: result, cacheHit } = await withServerCache({
+      key: cacheKey,
+      ttlMs: EXTRACT_CACHE_TTL_MS,
+      bypass: parsed.data.bypassCache,
+      compute: () =>
+        extractItemsFromYouTube({
+          canonicalYoutubeUrl: normalizedVideo.canonicalUrl,
+          question: parsed.data.question,
+          requestedModel: effectiveModel,
+        }),
     });
 
     const payload: ExtractResponse = {
@@ -45,8 +62,11 @@ export async function POST(request: Request) {
       videoId: normalizedVideo.videoId,
       canonicalUrl: normalizedVideo.canonicalUrl,
       question: parsed.data.question,
-      items,
-      diagnostics,
+      items: result.items,
+      diagnostics: {
+        ...result.diagnostics,
+        cacheHit,
+      },
     };
 
     return NextResponse.json(payload, { status: 200 });

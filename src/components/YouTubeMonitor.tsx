@@ -1,14 +1,28 @@
 "use client";
 
 import { useEffect, useId, useRef, useState } from "react";
-import { ExternalLink, Film, Maximize2, Play, X } from "lucide-react";
+import { ExternalLink, Film, Maximize2, Pause, Play, X } from "lucide-react";
 import type { EvidenceFrame, TracedItem } from "@/lib/types";
 import { buildYouTubeTimestampUrl, formatTimestamp } from "@/lib/video/youtube";
+
+// YouTube IFrame Player states: -1 unstarted, 0 ended, 1 playing, 2 paused, 3 buffering, 5 video cued
+const YT_STATE_PLAYING = 1;
+const YT_STATE_PAUSED = 2;
 
 type YTPlayerInstance = {
   seekTo: (seconds: number, allowSeekAhead: boolean) => void;
   playVideo: () => void;
-  loadVideoById: (videoId: string, startSeconds?: number) => void;
+  pauseVideo: () => void;
+  mute: () => void;
+  unMute: () => void;
+  isMuted: () => boolean;
+  getPlayerState?: () => number;
+  cueVideoById: (
+    videoIdOrOpts:
+      | string
+      | { videoId: string; startSeconds?: number },
+    startSeconds?: number,
+  ) => void;
   getDuration?: () => number;
   destroy: () => void;
 };
@@ -23,7 +37,10 @@ declare global {
           playerVars?: Record<string, string | number>;
           events?: {
             onReady?: (e: { target: YTPlayerInstance }) => void;
-            onStateChange?: (e: { target: YTPlayerInstance; data: number }) => void;
+            onStateChange?: (e: {
+              target: YTPlayerInstance;
+              data: number;
+            }) => void;
             onError?: (e: { data?: number }) => void;
           };
         },
@@ -87,6 +104,12 @@ export function YouTubeMonitor({
   const readyRef = useRef(false);
   const pendingSeekRef = useRef<number | null>(null);
   const loadedVideoIdRef = useRef<string | null>(null);
+
+  // Tracks when we programmatically seek to an evidence frame so we freeze (pause) cleanly
+  // on the decoded frame without autoplaying video or blaring audio.
+  const freezeOnDecodedFrameRef = useRef(false);
+  const restoreUnmuteAfterFreezeRef = useRef(false);
+
   const onDurationRef = useRef(onDurationDetected);
   onDurationRef.current = onDurationDetected;
 
@@ -95,6 +118,25 @@ export function YouTubeMonitor({
   const [lightboxFrame, setLightboxFrame] = useState<EvidenceFrame | null>(
     null,
   );
+
+  const seekAndPauseAtFrame = (player: YTPlayerInstance, seconds: number) => {
+    const state = player.getPlayerState?.();
+    if (state === YT_STATE_PLAYING || state === YT_STATE_PAUSED) {
+      // Stream is already decoded: seek directly and hold paused on that frame
+      player.seekTo(seconds, true);
+      player.pauseVideo();
+      freezeOnDecodedFrameRef.current = false;
+      return;
+    }
+
+    // Stream is unstarted/cued: mute briefly while YouTube decodes the target keyframe,
+    // then immediately pause in `onStateChange` the instant the frame renders.
+    const wasAlreadyMuted = player.isMuted?.() ?? false;
+    restoreUnmuteAfterFreezeRef.current = !wasAlreadyMuted;
+    freezeOnDecodedFrameRef.current = true;
+    player.mute?.();
+    player.seekTo(seconds, true);
+  };
 
   useEffect(() => {
     if (!videoId) return;
@@ -114,7 +156,8 @@ export function YouTubeMonitor({
       if (playerRef.current && readyRef.current) {
         if (loadedVideoIdRef.current !== videoId) {
           loadedVideoIdRef.current = videoId;
-          playerRef.current.loadVideoById(videoId, 0);
+          // Cue without autoplaying when switching videos
+          playerRef.current.cueVideoById({ videoId, startSeconds: 0 });
         }
         return;
       }
@@ -126,6 +169,7 @@ export function YouTubeMonitor({
       playerRef.current = new window.YT.Player(playerContainerId, {
         videoId,
         playerVars: {
+          autoplay: 0,
           rel: 0,
           modestbranding: 1,
           playsinline: 1,
@@ -136,13 +180,24 @@ export function YouTubeMonitor({
             readyRef.current = true;
             reportDuration(e.target);
             if (pendingSeekRef.current !== null) {
-              playerRef.current?.seekTo(pendingSeekRef.current, true);
-              playerRef.current?.playVideo();
+              const targetSec = pendingSeekRef.current;
               pendingSeekRef.current = null;
+              seekAndPauseAtFrame(e.target, targetSec);
             }
           },
           onStateChange: (e) => {
             reportDuration(e.target);
+            if (
+              e.data === YT_STATE_PLAYING &&
+              freezeOnDecodedFrameRef.current
+            ) {
+              freezeOnDecodedFrameRef.current = false;
+              e.target.pauseVideo();
+              if (restoreUnmuteAfterFreezeRef.current) {
+                restoreUnmuteAfterFreezeRef.current = false;
+                e.target.unMute?.();
+              }
+            }
           },
           onError: () => {
             setEmbedError(true);
@@ -168,8 +223,7 @@ export function YouTubeMonitor({
     if (!seekRequest || !videoId) return;
     setLastSeekSec(seekRequest.seconds);
     if (playerRef.current && readyRef.current) {
-      playerRef.current.seekTo(seekRequest.seconds, true);
-      playerRef.current.playVideo();
+      seekAndPauseAtFrame(playerRef.current, seekRequest.seconds);
     } else {
       pendingSeekRef.current = seekRequest.seconds;
     }
@@ -184,29 +238,8 @@ export function YouTubeMonitor({
 
   return (
     <div className="space-y-4">
-      {/* Monitor Frame */}
-      <div className="overflow-hidden rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)]">
-        <div className="flex items-center justify-between border-b border-[var(--border-subtle)] px-3.5 py-2 text-xs">
-          <div className="flex items-center gap-2 font-[family-name:var(--font-mono)] text-[var(--ink-secondary)]">
-            <span className="inline-block h-2 w-2 rounded-full bg-amber-500" />
-            <span>MONITOR</span>
-            {videoId && (
-              <span className="text-[var(--ink-muted)]">· ID {videoId}</span>
-            )}
-          </div>
-          {videoId && (
-            <a
-              href={buildYouTubeTimestampUrl(videoId, lastSeekSec)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-secondary)] transition-colors hover:text-amber-500"
-            >
-              Watch on YouTube @ {formatTimestamp(lastSeekSec)}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </div>
-
+      {/* Cinema Player Card */}
+      <div className="surface-card overflow-hidden rounded-3xl">
         <div className="relative aspect-video w-full bg-black">
           {videoId ? (
             <>
@@ -214,65 +247,67 @@ export function YouTubeMonitor({
               {embedError && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-neutral-950/95 p-6 text-center">
                   <p className="max-w-sm text-sm text-neutral-300">
-                    The video uploader disabled embedded playback on external
-                    sites. Gemini 4 still analyzed the public URL directly.
+                    Embedded playback is disabled by the uploader, though Gemini
+                    analyzed the public video directly.
                   </p>
                   <a
                     href={buildYouTubeTimestampUrl(videoId, lastSeekSec)}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/40 bg-amber-500/15 px-3.5 py-2 font-[family-name:var(--font-mono)] text-xs font-medium text-amber-300 hover:bg-amber-500/25"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs font-semibold text-neutral-950 hover:bg-neutral-200"
                   >
-                    Open YouTube at {formatTimestamp(lastSeekSec)}
+                    Open on YouTube at {formatTimestamp(lastSeekSec)}
                     <ExternalLink className="h-3.5 w-3.5" />
                   </a>
                 </div>
               )}
             </>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
-              <div className="flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-white/5 text-neutral-400">
-                <Play className="h-4 w-4 translate-x-0.5" />
-              </div>
-              <p className="font-[family-name:var(--font-mono)] text-xs uppercase tracking-wider text-neutral-400">
-                No Active Feed
-              </p>
-              <p className="max-w-xs text-xs text-neutral-500">
-                Paste any public YouTube URL above and ask about the items worn
-                or shown in the clip.
-              </p>
+            <div className="flex h-full items-center justify-center text-xs text-neutral-500">
+              <Play className="mr-1.5 h-3.5 w-3.5" /> Loading clip…
             </div>
           )}
         </div>
+
+        {videoId && (
+          <div className="flex items-center justify-between px-4 py-2.5 text-xs">
+            <span className="inline-flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+              <Pause className="h-3 w-3 text-amber-500" />
+              <span>Paused at evidence · {formatTimestamp(lastSeekSec)}</span>
+            </span>
+            <a
+              href={buildYouTubeTimestampUrl(videoId, lastSeekSec)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 font-medium text-[var(--ink-secondary)] transition-colors hover:text-[var(--ink-primary)]"
+            >
+              <span>Open in YouTube</span>
+              <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+        )}
       </div>
 
-      {/* Supporting Scene Frames Filmstrip */}
+      {/* Supporting Scene Frames Card */}
       {activeItem && activeFrames.length > 0 && (
-        <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-3.5">
-          <div className="mb-2.5 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">
+        <div className="surface-card rounded-3xl p-4">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-[var(--ink-primary)]">
               <Film className="h-3.5 w-3.5 text-amber-500" />
               <span className="truncate">
-                {allUploadedStills
-                  ? "Uploaded Reference Photo"
-                  : `Supporting Scene Frames · ${activeItem.label}`}
+                {allUploadedStills ? "Reference Photo" : "Captured Scene Frames"}
               </span>
             </div>
-            <span
-              className={`shrink-0 rounded border px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] ${
-                allUploadedStills
-                  ? "border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300"
-                  : "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-              }`}
-            >
-              {allUploadedStills ? "UPLOADED REFERENCE" : "SOURCE VIDEO EVIDENCE"}
+            <span className="rounded-full bg-[var(--bg-sunken)] px-2.5 py-0.5 text-[10px] font-medium text-[var(--ink-secondary)]">
+              {allUploadedStills ? "Uploaded photo" : "From attached video"}
             </span>
           </div>
+
           <div className="grid grid-cols-3 gap-2.5">
             {activeFrames.map((frame, i) => (
               <div
                 key={`${frame.kind}_${frame.atSec ?? "ref"}_${i}`}
-                className="group relative overflow-hidden rounded border border-[var(--border-subtle)] bg-black"
+                className="group relative overflow-hidden rounded-xl border border-[var(--border-subtle)] bg-black"
               >
                 <button
                   type="button"
@@ -283,28 +318,28 @@ export function YouTubeMonitor({
                       setLightboxFrame(frame);
                     }
                   }}
-                  className="block w-full text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+                  className="block w-full text-left focus:outline-none"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     src={frame.dataUrl}
                     alt={frame.label}
-                    className="aspect-video w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                    className="aspect-video w-full object-cover transition-transform duration-200 group-hover:scale-105"
                   />
-                  <div className="flex items-center justify-between bg-neutral-950/90 px-2 py-1 font-[family-name:var(--font-mono)] text-[10px] text-neutral-300">
+                  <div className="flex items-center justify-between bg-neutral-950/90 px-2.5 py-1 font-[family-name:var(--font-mono)] text-[10px] text-neutral-300">
                     <span>
                       {frame.atSec !== null
-                        ? `@${formatTimestamp(frame.atSec)}`
-                        : "UNMAPPED"}
+                        ? formatTimestamp(frame.atSec)
+                        : "Ref"}
                     </span>
                     <span className="text-amber-400">
                       {frame.kind === "video_crop"
-                        ? "CROP"
+                        ? "Crop"
                         : frame.kind === "uploaded_still"
-                          ? "REF"
+                          ? "Photo"
                           : i === 0
-                            ? "BEST"
-                            : `SHOT ${i + 1}`}
+                            ? "Best"
+                            : `#${i + 1}`}
                     </span>
                   </div>
                 </button>
@@ -312,7 +347,7 @@ export function YouTubeMonitor({
                   type="button"
                   aria-label="Inspect full frame"
                   onClick={() => setLightboxFrame(frame)}
-                  className="absolute right-1.5 top-1.5 rounded bg-black/75 p-1 text-neutral-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 focus:opacity-100"
+                  className="absolute right-1.5 top-1.5 rounded-lg bg-black/75 p-1 text-neutral-300 opacity-0 transition-opacity hover:text-white group-hover:opacity-100 focus:opacity-100"
                 >
                   <Maximize2 className="h-3 w-3" />
                 </button>
@@ -322,33 +357,33 @@ export function YouTubeMonitor({
         </div>
       )}
 
-      {/* Cross-Scene Sighting Index */}
+      {/* Scene Timeline Sightings */}
       {items.length > 0 && (
-        <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-3.5">
-          <div className="mb-2.5 flex items-center justify-between">
-            <span className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">
-              Cross-Scene Sightings ({items.length}{" "}
-              {items.length === 1 ? "item" : "items"})
-            </span>
+        <div className="surface-card rounded-3xl p-4 sm:p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-secondary)]">
+              Scene Timeline
+            </h3>
             {!hasCompanionMedia && (
-              <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
-                Click timestamp to jump player
+              <span className="text-[11px] text-[var(--ink-muted)]">
+                Tap timestamp to jump & pause
               </span>
             )}
           </div>
-          <div className="space-y-2.5">
+
+          <div className="space-y-3">
             {items.map((item) => {
               const isSelected = item.itemId === activeItem?.itemId;
               return (
                 <div
                   key={item.itemId}
-                  className={`rounded-md border p-2.5 transition-colors ${
+                  className={`rounded-2xl border p-3 transition-colors ${
                     isSelected
-                      ? "border-amber-500/40 bg-[var(--bg-elevated)]"
-                      : "border-[var(--border-subtle)] bg-[var(--bg-sunken)]"
+                      ? "border-[var(--border-strong)] bg-[var(--bg-elevated)]/70"
+                      : "border-[var(--border-subtle)] bg-[var(--bg-sunken)]/50"
                   }`}
                 >
-                  <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <div className="mb-2 flex items-center justify-between gap-2">
                     <button
                       type="button"
                       onClick={() =>
@@ -358,10 +393,11 @@ export function YouTubeMonitor({
                     >
                       {item.label}
                     </button>
-                    <span className="shrink-0 rounded border border-[var(--border-subtle)] px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[10px] uppercase text-[var(--ink-muted)]">
+                    <span className="shrink-0 text-[11px] capitalize text-[var(--ink-muted)]">
                       {item.category}
                     </span>
                   </div>
+
                   <div className="flex flex-wrap gap-1.5">
                     {item.sightings.map((s, idx) => {
                       const isBest =
@@ -374,22 +410,14 @@ export function YouTubeMonitor({
                           onClick={() =>
                             onSelectItemAndSeek(item.itemId, s.evidenceSec)
                           }
-                          className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[11px] transition-colors ${
+                          className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-[family-name:var(--font-mono)] text-[11px] transition-colors ${
                             isBest
-                              ? "border-amber-500/50 bg-amber-500/15 text-amber-600 hover:bg-amber-500/25 dark:text-amber-300"
+                              ? "border-amber-500/45 bg-amber-500/12 font-medium text-amber-700 hover:bg-amber-500/20 dark:text-amber-300"
                               : "border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
                           }`}
                         >
                           <span>{formatTimestamp(s.evidenceSec)}</span>
-                          {s.endSec - s.startSec >= 1.5 && (
-                            <span className="text-[10px] opacity-65">
-                              ({formatTimestamp(s.startSec)}–
-                              {formatTimestamp(s.endSec)})
-                            </span>
-                          )}
-                          {isBest && (
-                            <span className="text-[9px] font-bold">★</span>
-                          )}
+                          {isBest && <span className="text-[9px]">★</span>}
                         </button>
                       );
                     })}
@@ -406,14 +434,14 @@ export function YouTubeMonitor({
         <div
           role="dialog"
           aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6 backdrop-blur-xs"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 p-6 backdrop-blur-sm"
           onClick={() => setLightboxFrame(null)}
         >
           <div
-            className="max-w-4xl overflow-hidden rounded-lg border border-white/15 bg-neutral-950"
+            className="max-w-4xl overflow-hidden rounded-2xl border border-white/15 bg-neutral-950 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-white/10 px-4 py-2.5 font-[family-name:var(--font-mono)] text-xs text-neutral-300">
+            <div className="flex items-center justify-between border-b border-white/10 px-4 py-3 text-xs text-neutral-300">
               <span>
                 {lightboxFrame.label} · {lightboxFrame.width}×
                 {lightboxFrame.height}px
@@ -421,7 +449,7 @@ export function YouTubeMonitor({
               <button
                 type="button"
                 onClick={() => setLightboxFrame(null)}
-                className="rounded p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
+                className="rounded-full p-1 text-neutral-400 hover:bg-white/10 hover:text-white"
               >
                 <X className="h-4 w-4" />
               </button>

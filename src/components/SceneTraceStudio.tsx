@@ -2,35 +2,27 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity,
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
-  ArrowUpRight,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
   Clock,
-  Crosshair,
-  ExternalLink,
-  Film,
   Loader2,
-  Moon,
-  Paperclip,
-  Play,
   RefreshCw,
-  Send,
-  ShoppingBag,
-  Sun,
-  Terminal,
-  Upload,
-  X,
+  SlidersHorizontal,
+  Zap,
 } from "lucide-react";
-import {
-  CheckoutModal,
-  formatMoneyMinor,
-} from "@/components/CheckoutModal";
+import { CheckoutModal } from "@/components/CheckoutModal";
 import { DiagnosticsDrawer } from "@/components/DiagnosticsDrawer";
+import { HomeStage } from "@/components/HomeStage";
+import { ItemDossierCard } from "@/components/ItemDossierCard";
+import { StudioNavbar } from "@/components/StudioNavbar";
 import { YouTubeMonitor } from "@/components/YouTubeMonitor";
+import {
+  makeClientTraceCacheKey,
+  readClientTraceCache,
+  writeClientTraceCache,
+} from "@/lib/cache/client-cache";
 import type { AllowedVideoModel } from "@/lib/env";
 import type {
   CheckoutPriceChange,
@@ -41,7 +33,6 @@ import type {
   ItemMatchDiagnostics,
   ManagedAgentReport,
   MatchItemResponse,
-  MatchLabel,
   Offer,
   OfferOption,
   TracedItem,
@@ -50,10 +41,7 @@ import {
   extractFramesFromCompanionVideo,
   readCompanionStillImage,
 } from "@/lib/video/frames-client";
-import {
-  formatTimestamp,
-  parseAndNormalizeYouTubeUrl,
-} from "@/lib/video/youtube";
+import { parseAndNormalizeYouTubeUrl } from "@/lib/video/youtube";
 
 type PipelineStage =
   | "idle"
@@ -64,73 +52,6 @@ type PipelineStage =
   | "complete"
   | "partial"
   | "failed";
-
-const QUESTION_PRESETS = [
-  {
-    short: "All worn items",
-    text: "Which shoes, jacket, shirt, or accessories is the person wearing?",
-  },
-  {
-    short: "Footwear & colorway",
-    text: "What sneakers or shoes appear in this clip and what colorway are they?",
-  },
-  {
-    short: "Watches & wristwear",
-    text: "Which watches appear across the scenes in this video?",
-  },
-  {
-    short: "Desk & everyday gear",
-    text: "Identify the mug, bag, tech accessories, or desk items shown.",
-  },
-];
-
-const VIDEO_MODEL_OPTIONS: { value: AllowedVideoModel; label: string }[] = [
-  { value: "gemini-4-neon", label: "Gemini 4 Neon (Default)" },
-  { value: "gemini-4-carbon", label: "Gemini 4 Carbon (Deep)" },
-  { value: "gemini-3.8-flash", label: "Gemini 3.8 Flash (Fast)" },
-];
-
-function matchBadgeMeta(label: MatchLabel): {
-  text: string;
-  classes: string;
-} {
-  switch (label) {
-    case "exact_supported":
-      return {
-        text: "Exact match supported",
-        classes:
-          "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-      };
-    case "possible":
-      return {
-        text: "Possible match",
-        classes:
-          "border-amber-500/45 bg-amber-500/12 text-amber-700 dark:text-amber-300",
-      };
-    case "similar":
-      return {
-        text: "Similar item",
-        classes:
-          "border-[var(--border-strong)] bg-[var(--bg-sunken)] text-[var(--ink-secondary)]",
-      };
-    case "unscored":
-      return {
-        text: "Catalog order (unscored)",
-        classes:
-          "border-dashed border-[var(--border-strong)] bg-[var(--bg-sunken)] text-[var(--ink-muted)]",
-      };
-  }
-}
-
-function sourceBadgeClasses(source: "visible" | "spoken" | "inferred"): string {
-  if (source === "visible") {
-    return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300";
-  }
-  if (source === "spoken") {
-    return "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300";
-  }
-  return "border-[var(--border-subtle)] bg-[var(--bg-sunken)] text-[var(--ink-muted)]";
-}
 
 export type SceneTraceStudioProps = {
   defaultVideoModel: AllowedVideoModel;
@@ -145,15 +66,17 @@ export function SceneTraceStudio({
 }: SceneTraceStudioProps) {
   const [darkMode, setDarkMode] = useState(true);
   const [youtubeUrl, setYoutubeUrl] = useState("");
-  const [question, setQuestion] = useState(QUESTION_PRESETS[0].text);
+  const [question, setQuestion] = useState(
+    "Which shoes and jacket is the host wearing?",
+  );
   const [videoModel, setVideoModel] =
     useState<AllowedVideoModel>(defaultVideoModel);
   const [managedAgentEnabled, setManagedAgentEnabled] = useState(true);
   const [companionFile, setCompanionFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [editQueryExpanded, setEditQueryExpanded] = useState(false);
+  const [itemFilterId, setItemFilterId] = useState<string>("all");
   const youtubeDurationRef = useRef<number | null>(null);
 
-  // Persists one stable idempotency UUID per distinct `offerToken` across network retries
   const idempotencyByTokenRef = useRef<Map<string, string>>(new Map());
 
   // Pipeline state
@@ -161,6 +84,7 @@ export function SceneTraceStudio({
   const [stageAnnouncement, setStageAnnouncement] = useState("");
   const [traceError, setTraceError] = useState<string | null>(null);
   const [frameWarning, setFrameWarning] = useState<string | null>(null);
+  const [servedFromCache, setServedFromCache] = useState(false);
   const [elapsedMs, setElapsedMs] = useState(0);
   const activeRunIdRef = useRef(0);
 
@@ -182,12 +106,6 @@ export function SceneTraceStudio({
   const [agentRunningByItem, setAgentRunningByItem] = useState<
     Record<string, boolean>
   >({});
-  const [expandedAgentSteps, setExpandedAgentSteps] = useState<
-    Record<string, boolean>
-  >({});
-  const [agentFollowUpInputs, setAgentFollowUpInputs] = useState<
-    Record<string, string>
-  >({});
   const [offersByItem, setOffersByItem] = useState<Record<string, Offer[]>>({});
   const [selectingVariantOfferId, setSelectingVariantOfferId] = useState<
     string | null
@@ -204,7 +122,7 @@ export function SceneTraceStudio({
     Record<string, ItemMatchDiagnostics>
   >({});
 
-  // Diagnostics & Checkout modals (current modal attempt separated from saved checkout history)
+  // Modals & Drawers
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [checkoutModalOpen, setCheckoutModalOpen] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
@@ -279,6 +197,27 @@ export function SceneTraceStudio({
     }
   };
 
+  const handleGoHome = useCallback(() => {
+    activeRunIdRef.current++;
+    setStage("idle");
+    setTraceError(null);
+    setFrameWarning(null);
+    setServedFromCache(false);
+    setItems([]);
+    setTraceId(null);
+    setActiveVideoId(null);
+    setActiveItemId(null);
+    setItemFilterId("all");
+    setEditQueryExpanded(false);
+    setFramesByItem({});
+    setAgentReportsByItem({});
+    setOffersByItem({});
+    setMatchDiagnosticsByItem({});
+    setExtractDiagnostics(null);
+    setElapsedMs(0);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
+
   const liveUrlPreview = useMemo(() => {
     if (!youtubeUrl.trim()) return null;
     try {
@@ -287,15 +226,6 @@ export function SceneTraceStudio({
       return null;
     }
   }, [youtubeUrl]);
-
-  useEffect(() => {
-    if (liveUrlPreview && stage === "idle") {
-      if (activeVideoId !== liveUrlPreview.videoId) {
-        youtubeDurationRef.current = null;
-        setActiveVideoId(liveUrlPreview.videoId);
-      }
-    }
-  }, [liveUrlPreview, stage, activeVideoId]);
 
   const triggerSeek = useCallback((itemId: string, seconds: number) => {
     setActiveItemId(itemId);
@@ -307,9 +237,16 @@ export function SceneTraceStudio({
       activeTraceId: string;
       targetItem: TracedItem;
       itemFrames: EvidenceFrame[];
+      bypassCache?: boolean;
       runId?: number;
-    }): Promise<boolean> => {
-      const { activeTraceId, targetItem, itemFrames, runId } = params;
+    }): Promise<{
+      hadError: boolean;
+      offers: Offer[];
+      diagnostics: ItemMatchDiagnostics | null;
+      cacheHit: boolean;
+    }> => {
+      const { activeTraceId, targetItem, itemFrames, bypassCache, runId } =
+        params;
       setMatchingItemIds((prev) => ({ ...prev, [targetItem.itemId]: true }));
 
       try {
@@ -329,6 +266,7 @@ export function SceneTraceStudio({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             traceId: activeTraceId,
+            bypassCache: Boolean(bypassCache),
             item: targetItem,
             evidenceFrames: leanFrames,
             country: defaultCountry,
@@ -341,7 +279,12 @@ export function SceneTraceStudio({
           | { error?: string };
 
         if (runId !== undefined && runId !== activeRunIdRef.current) {
-          return false;
+          return {
+            hadError: false,
+            offers: [],
+            diagnostics: null,
+            cacheHit: false,
+          };
         }
 
         if (matchRes.ok && "offers" in matchJson) {
@@ -353,61 +296,78 @@ export function SceneTraceStudio({
             ...prev,
             [targetItem.itemId]: matchJson.diagnostics,
           }));
-          return Boolean(
-            !matchJson.diagnostics.shopLive ||
-              matchJson.diagnostics.rankingError,
-          );
+          return {
+            hadError: Boolean(
+              !matchJson.diagnostics.shopLive ||
+                matchJson.diagnostics.rankingError,
+            ),
+            offers: matchJson.offers,
+            diagnostics: matchJson.diagnostics,
+            cacheHit: Boolean(matchJson.diagnostics.cacheHit),
+          };
         } else {
+          const fallbackDiag: ItemMatchDiagnostics = {
+            itemId: targetItem.itemId,
+            shopLive: false,
+            decisionsLive: false,
+            evidenceMode: "catalog_fallback",
+            decisionModel: "gemini-decision-1",
+            candidateCount: 0,
+            queriesRun: [],
+            usedVisualSearch: false,
+            photoSearchError: null,
+            shopDurationMs: 0,
+            decisionsDurationMs: 0,
+            shopError:
+              ("error" in matchJson && matchJson.error) ||
+              `Match HTTP ${matchRes.status}`,
+            rankingError: null,
+            rankComparison: [],
+          };
           setOffersByItem((prev) => ({ ...prev, [targetItem.itemId]: [] }));
           setMatchDiagnosticsByItem((prev) => ({
             ...prev,
-            [targetItem.itemId]: {
-              itemId: targetItem.itemId,
-              shopLive: false,
-              decisionsLive: false,
-              evidenceMode: "catalog_fallback",
-              decisionModel: "gemini-decision-1",
-              candidateCount: 0,
-              queriesRun: [],
-              usedVisualSearch: false,
-              photoSearchError: null,
-              shopDurationMs: 0,
-              decisionsDurationMs: 0,
-              shopError:
-                ("error" in matchJson && matchJson.error) ||
-                `Match HTTP ${matchRes.status}`,
-              rankingError: null,
-              rankComparison: [],
-            },
+            [targetItem.itemId]: fallbackDiag,
           }));
-          return true;
+          return {
+            hadError: true,
+            offers: [],
+            diagnostics: fallbackDiag,
+            cacheHit: false,
+          };
         }
       } catch (err) {
+        const netDiag: ItemMatchDiagnostics = {
+          itemId: targetItem.itemId,
+          shopLive: false,
+          decisionsLive: false,
+          evidenceMode: "catalog_fallback",
+          decisionModel: "gemini-decision-1",
+          candidateCount: 0,
+          queriesRun: [],
+          usedVisualSearch: false,
+          photoSearchError: null,
+          shopDurationMs: 0,
+          decisionsDurationMs: 0,
+          shopError:
+            err instanceof Error
+              ? err.message
+              : "Network error matching item.",
+          rankingError: null,
+          rankComparison: [],
+        };
         if (runId === undefined || runId === activeRunIdRef.current) {
           setMatchDiagnosticsByItem((prev) => ({
             ...prev,
-            [targetItem.itemId]: {
-              itemId: targetItem.itemId,
-              shopLive: false,
-              decisionsLive: false,
-              evidenceMode: "catalog_fallback",
-              decisionModel: "gemini-decision-1",
-              candidateCount: 0,
-              queriesRun: [],
-              usedVisualSearch: false,
-              photoSearchError: null,
-              shopDurationMs: 0,
-              decisionsDurationMs: 0,
-              shopError:
-                err instanceof Error
-                  ? err.message
-                  : "Network error matching item.",
-              rankingError: null,
-              rankComparison: [],
-            },
+            [targetItem.itemId]: netDiag,
           }));
         }
-        return true;
+        return {
+          hadError: true,
+          offers: [],
+          diagnostics: netDiag,
+          cacheHit: false,
+        };
       } finally {
         if (runId === undefined || runId === activeRunIdRef.current) {
           setMatchingItemIds((prev) => ({
@@ -427,14 +387,19 @@ export function SceneTraceStudio({
       followUpPrompt?: string;
       previousInteractionId?: string | null;
       primaryFrame?: EvidenceFrame | null;
+      bypassCache?: boolean;
       reRunMatchAfter?: boolean;
-    }): Promise<TracedItem> => {
+    }): Promise<{
+      updatedItem: TracedItem;
+      report: ManagedAgentReport | null;
+    }> => {
       const {
         targetItem,
         baseQuestion,
         followUpPrompt,
         previousInteractionId,
         primaryFrame,
+        bypassCache,
         reRunMatchAfter,
       } = params;
 
@@ -448,6 +413,7 @@ export function SceneTraceStudio({
             question: baseQuestion,
             followUpPrompt,
             previousInteractionId,
+            bypassCache: Boolean(bypassCache),
             item: targetItem,
             primaryFrame: primaryFrame
               ? {
@@ -484,13 +450,14 @@ export function SceneTraceStudio({
               activeTraceId: traceId,
               targetItem: data.updatedItem,
               itemFrames: framesByItem[targetItem.itemId] ?? [],
+              bypassCache: Boolean(followUpPrompt) || Boolean(bypassCache),
             });
           }
 
-          return data.updatedItem;
+          return { updatedItem: data.updatedItem, report: data.report };
         }
       } catch {
-        // Non-fatal: keep Gemini 4 extracted item intact if sandbox times out
+        // Keep extracted item intact if sandbox times out
       } finally {
         setAgentRunningByItem((prev) => ({
           ...prev,
@@ -498,20 +465,29 @@ export function SceneTraceStudio({
         }));
       }
 
-      return targetItem;
+      return { updatedItem: targetItem, report: null };
     },
     [framesByItem, matchSingleItem, traceId],
   );
 
-  const handleTrace = async (e?: React.FormEvent) => {
-    e?.preventDefault();
+  const handleTrace = async (override?: {
+    url?: string;
+    question?: string;
+    bypassCache?: boolean;
+  }) => {
+    const targetUrl = override?.url ?? youtubeUrl;
+    const targetQuestion = override?.question ?? question;
+    const bypassCache = Boolean(override?.bypassCache);
 
     setTraceError(null);
     setFrameWarning(null);
+    setServedFromCache(false);
+    setEditQueryExpanded(false);
+    setItemFilterId("all");
 
     let normalized: ReturnType<typeof parseAndNormalizeYouTubeUrl>;
     try {
-      normalized = parseAndNormalizeYouTubeUrl(youtubeUrl);
+      normalized = parseAndNormalizeYouTubeUrl(targetUrl);
     } catch (err) {
       setTraceError(
         err instanceof Error ? err.message : "Invalid YouTube URL.",
@@ -519,9 +495,48 @@ export function SceneTraceStudio({
       return;
     }
 
-    if (question.trim().length < 3) {
+    if (targetQuestion.trim().length < 3) {
       setTraceError("Enter a question describing which items to trace.");
       return;
+    }
+
+    const companionSig = companionFile
+      ? `${companionFile.name}:${companionFile.size}:${companionFile.lastModified}`
+      : "none";
+    const clientCacheKey = makeClientTraceCacheKey({
+      videoId: normalized.videoId,
+      question: targetQuestion,
+      videoModel,
+      managedAgentEnabled,
+      companionSignature: companionSig,
+    });
+
+    // Instant client-side cache fast path (<15ms) when repeating an identical URL+question run
+    if (!bypassCache && !companionFile) {
+      const hit = readClientTraceCache(clientCacheKey);
+      if (hit) {
+        activeRunIdRef.current++;
+        setActiveVideoId(normalized.videoId);
+        setTraceId(hit.traceId);
+        setItems(hit.items);
+        setExtractDiagnostics({ ...hit.extractDiagnostics, cacheHit: true });
+        setAgentReportsByItem(hit.agentReportsByItem);
+        setOffersByItem(hit.offersByItem);
+        setMatchDiagnosticsByItem(hit.matchDiagnosticsByItem);
+        setFramesByItem({});
+        setServedFromCache(true);
+        setElapsedMs(10);
+        setStage("complete");
+        if (hit.items[0]) {
+          setActiveItemId(hit.items[0].itemId);
+          setSeekRequest({
+            seconds: hit.items[0].bestEvidenceSec,
+            nonce: Date.now(),
+          });
+        }
+        setStageAnnouncement("Loaded instant cached trace.");
+        return;
+      }
     }
 
     const runId = ++activeRunIdRef.current;
@@ -531,7 +546,7 @@ export function SceneTraceStudio({
     }
     setElapsedMs(0);
     setStage("extracting");
-    setStageAnnouncement("Extracting scene items and timestamps with Gemini 4…");
+    setStageAnnouncement("Analyzing video scenes with Gemini 4…");
     setItems([]);
     setFramesByItem({});
     setAgentReportsByItem({});
@@ -539,15 +554,17 @@ export function SceneTraceStudio({
     setMatchDiagnosticsByItem({});
     setExtractDiagnostics(null);
 
+    let anyStageHitCache = false;
+
     try {
-      // Stage 1: Gemini 4 YouTube Video Extraction
       const extractRes = await fetch("/api/traces/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           youtubeUrl: normalized.canonicalUrl,
-          question: question.trim(),
+          question: targetQuestion.trim(),
           videoModel,
+          bypassCache,
         }),
       });
 
@@ -567,11 +584,13 @@ export function SceneTraceStudio({
         return;
       }
 
+      if (extractJson.diagnostics.cacheHit) anyStageHitCache = true;
       setTraceId(extractJson.traceId);
       setItems(extractJson.items);
       setExtractDiagnostics(extractJson.diagnostics);
 
       if (extractJson.items.length === 0) {
+        setServedFromCache(anyStageHitCache);
         setStage("complete");
         setStageAnnouncement(
           "Video analyzed — no matching products were detected for this question.",
@@ -586,21 +605,17 @@ export function SceneTraceStudio({
         nonce: Date.now(),
       });
 
-      // Stage 2: Optional Browser <canvas> Frame Extraction with Duration Alignment & Box Cropping
       let capturedFramesMap: Record<string, EvidenceFrame[]> = {};
       if (companionFile) {
         setStage("capturing_frames");
-        setStageAnnouncement(
-          "Capturing high-resolution scene frames from companion file…",
-        );
+        setStageAnnouncement("Capturing supporting frames from attached media…");
         try {
           if (companionFile.type.startsWith("image/")) {
             const singleStill = await readCompanionStillImage(companionFile);
-            // Attach uploaded reference photo ONLY to the primary item (never mislabeled across unrelated items)
             capturedFramesMap[firstItem.itemId] = [singleStill];
             if (extractJson.items.length > 1) {
               setFrameWarning(
-                `Attached reference photo associated with primary item "${firstItem.label}" (unmapped to video timestamps).`,
+                `Reference photo associated with "${firstItem.label}" (unmapped to video timestamps).`,
               );
             }
           } else {
@@ -625,61 +640,92 @@ export function SceneTraceStudio({
         }
       }
 
-      // Stage 2.5: Gemini Managed Agent Remote Sandbox Investigation
       let workingItems = [...extractJson.items];
+      const collectedAgentReports: Record<string, ManagedAgentReport> = {};
+
       if (managedAgentEnabled) {
         setStage("agent_investigating");
         setStageAnnouncement(
-          "Running Gemini Managed Agent in remote Linux sandbox for SKU & MSRP forensics…",
+          "Researching SKUs and price benchmarks in Managed Agent sandbox…",
         );
 
         const enriched = await Promise.all(
           workingItems.map((it) =>
             runAgentForItem({
               targetItem: it,
-              baseQuestion: question.trim(),
+              baseQuestion: targetQuestion.trim(),
               primaryFrame: capturedFramesMap[it.itemId]?.[0] ?? null,
+              bypassCache,
               reRunMatchAfter: false,
             }),
           ),
         );
         if (runId !== activeRunIdRef.current) return;
-        workingItems = enriched;
+        workingItems = enriched.map((e) => {
+          if (e.report) {
+            collectedAgentReports[e.updatedItem.itemId] = e.report;
+            if (e.report.cacheHit) anyStageHitCache = true;
+          }
+          return e.updatedItem;
+        });
       }
 
-      // Stage 3: Per-Item Shop MCP Search + Gemini Decisions Reranking
       setStage("matching");
       setStageAnnouncement(
-        "Searching Shopify catalog via Shop MCP and scoring matches with Gemini Decisions…",
+        "Searching Shopify catalog and scoring matches with Gemini Decisions…",
       );
 
       let hadAnyError = false;
+      const collectedOffers: Record<string, Offer[]> = {};
+      const collectedDiags: Record<string, ItemMatchDiagnostics> = {};
       const queue = [...workingItems];
+
       const workers = Array.from({
         length: Math.min(3, queue.length),
       }).map(async () => {
         while (queue.length > 0) {
           const currentItem = queue.shift();
           if (!currentItem) break;
-          const itemHadError = await matchSingleItem({
+          const matchOut = await matchSingleItem({
             activeTraceId: extractJson.traceId,
             targetItem: currentItem,
             itemFrames: capturedFramesMap[currentItem.itemId] ?? [],
+            bypassCache,
             runId,
           });
-          if (itemHadError) hadAnyError = true;
+          if (matchOut.hadError) hadAnyError = true;
+          if (matchOut.cacheHit) anyStageHitCache = true;
+          collectedOffers[currentItem.itemId] = matchOut.offers;
+          if (matchOut.diagnostics) {
+            collectedDiags[currentItem.itemId] = matchOut.diagnostics;
+          }
         }
       });
 
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
 
+      setServedFromCache(anyStageHitCache);
       setStage(hadAnyError ? "partial" : "complete");
       setStageAnnouncement(
         hadAnyError
           ? "Trace finished with partial provider warnings."
           : "Trace complete — offers ranked by Gemini Decisions.",
       );
+
+      if (!hadAnyError && !companionFile) {
+        writeClientTraceCache({
+          cacheKey: clientCacheKey,
+          savedAt: Date.now(),
+          traceId: extractJson.traceId,
+          videoId: normalized.videoId,
+          items: workingItems,
+          extractDiagnostics: extractJson.diagnostics,
+          agentReportsByItem: collectedAgentReports,
+          offersByItem: collectedOffers,
+          matchDiagnosticsByItem: collectedDiags,
+        });
+      }
     } catch (err) {
       if (runId !== activeRunIdRef.current) return;
       setStage("failed");
@@ -844,7 +890,6 @@ export function SceneTraceStudio({
     if (buyingOfferId) return;
     setBuyingOfferId(params.offerId);
     setCheckoutLoading(true);
-    // Clear modalCheckout so an error or price-change on Offer B never shows Merchant A's stale checkout!
     setModalCheckout(null);
     setCheckoutError(null);
     setPriceChangePrompt(null);
@@ -963,6 +1008,8 @@ export function SceneTraceStudio({
     stage === "agent_investigating" ||
     stage === "matching";
 
+  const isHomeView = stage === "idle" && items.length === 0;
+
   const promotedTopCount = useMemo(() => {
     let count = 0;
     for (const diag of Object.values(matchDiagnosticsByItem)) {
@@ -972,1068 +1019,398 @@ export function SceneTraceStudio({
     return count;
   }, [matchDiagnosticsByItem]);
 
+  const visibleItems = useMemo(() => {
+    if (itemFilterId === "all") return items;
+    return items.filter((it) => it.itemId === itemFilterId);
+  }, [items, itemFilterId]);
+
   return (
     <div className="min-h-screen bg-[var(--bg-canvas)] text-[var(--ink-primary)]">
       <div className="sr-only" aria-live="polite">
         {stageAnnouncement}
       </div>
 
-      {/* Top Studio Header */}
-      <header className="sticky top-0 z-30 border-b border-[var(--border-subtle)] bg-[var(--bg-canvas)]/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-2.5 sm:px-6">
-          <div className="flex items-center gap-3">
-            <div className="flex h-7 w-7 items-center justify-center rounded border border-amber-500/45 bg-amber-500/12 text-amber-500">
-              <Crosshair className="h-4 w-4" />
-            </div>
-            <div className="flex items-baseline gap-2.5">
-              <span className="font-[family-name:var(--font-mono)] text-sm font-bold tracking-tight">
-                SCENETRACE
-              </span>
-              <span className="hidden font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-widest text-[var(--ink-muted)] lg:inline">
-                Gemini 4 · Managed Agents · Shop MCP · Decisions
-              </span>
-            </div>
-          </div>
+      {/* Redesigned Studio Navbar with Clickable Brand & Explicit Home / New Trace Button */}
+      <StudioNavbar
+        isHomeView={isHomeView}
+        isRunning={isRunning}
+        onGoHome={handleGoHome}
+        videoModel={videoModel}
+        onChangeVideoModel={setVideoModel}
+        managedAgentEnabled={managedAgentEnabled}
+        onToggleManagedAgent={() => setManagedAgentEnabled((v) => !v)}
+        savedCheckout={savedCheckout}
+        onOpenSavedCheckout={() => {
+          if (!savedCheckout) return;
+          setCheckoutError(null);
+          setPriceChangePrompt(null);
+          setModalCheckout(savedCheckout);
+          setCheckoutModalOpen(true);
+        }}
+        onOpenDiagnostics={() => setDiagnosticsOpen(true)}
+        promotedTopCount={promotedTopCount}
+        hasTraceResults={Boolean(extractDiagnostics)}
+        darkMode={darkMode}
+        onToggleTheme={toggleTheme}
+        country={defaultCountry}
+        currency={defaultCurrency}
+      />
 
-          <div className="flex items-center gap-2">
-            <span className="hidden rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-1 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-secondary)] sm:inline-block">
-              {defaultCountry} · {defaultCurrency}
-            </span>
+      {isHomeView ? (
+        <HomeStage
+          youtubeUrl={youtubeUrl}
+          onChangeYoutubeUrl={setYoutubeUrl}
+          question={question}
+          onChangeQuestion={setQuestion}
+          liveUrlPreview={liveUrlPreview}
+          companionFile={companionFile}
+          onChangeCompanionFile={setCompanionFile}
+          managedAgentEnabled={managedAgentEnabled}
+          onToggleManagedAgent={() => setManagedAgentEnabled((v) => !v)}
+          isRunning={isRunning}
+          traceError={traceError}
+          onSubmitTrace={handleTrace}
+        />
+      ) : (
+        <main className="mx-auto max-w-7xl space-y-6 px-4 py-6 sm:px-6">
+          {/* Active Workspace Query & Live Progress Header */}
+          <section className="surface-card rounded-3xl p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  type="button"
+                  onClick={handleGoHome}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
+                >
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  <span>Home</span>
+                </button>
 
-            <label className="sr-only" htmlFor="video-model-select">
-              Gemini Video Model
-            </label>
-            <select
-              id="video-model-select"
-              value={videoModel}
-              onChange={(e) =>
-                setVideoModel(e.target.value as AllowedVideoModel)
-              }
-              disabled={isRunning}
-              className="rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-primary)] focus:border-amber-500 focus:outline-none disabled:opacity-50"
-            >
-              {VIDEO_MODEL_OPTIONS.map((opt) => (
-                <option key={opt.value} value={opt.value}>
-                  {opt.label}
-                </option>
-              ))}
-            </select>
-
-            {savedCheckout && (
-              <button
-                type="button"
-                onClick={() => {
-                  setCheckoutError(null);
-                  setPriceChangePrompt(null);
-                  setModalCheckout(savedCheckout);
-                  setCheckoutModalOpen(true);
-                }}
-                className="inline-flex items-center gap-1.5 rounded border border-emerald-500/40 bg-emerald-500/12 px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] font-medium text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-300"
-              >
-                <ShoppingBag className="h-3.5 w-3.5" />
-                <span className="hidden sm:inline">
-                  {savedCheckout.orderPlaced ? "Order Placed" : "Checkout"}
-                </span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setDiagnosticsOpen(true)}
-              className="inline-flex items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
-            >
-              <Activity className="h-3.5 w-3.5 text-amber-500" />
-              <span className="hidden sm:inline">Diagnostics</span>
-              {promotedTopCount > 0 && (
-                <span className="rounded bg-emerald-500/20 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-500">
-                  {promotedTopCount}↑
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleTheme}
-              aria-label={
-                darkMode ? "Switch to light mode" : "Switch to dark mode"
-              }
-              className="rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-1.5 text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
-            >
-              {darkMode ? (
-                <Sun className="h-3.5 w-3.5" />
-              ) : (
-                <Moon className="h-3.5 w-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:px-6">
-        {/* Command Console */}
-        <section className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 sm:p-5">
-          <form onSubmit={handleTrace} className="space-y-3.5">
-            <div className="grid grid-cols-1 gap-3 lg:grid-cols-12">
-              <div className="lg:col-span-5">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label
-                    htmlFor="youtube-url-input"
-                    className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]"
-                  >
-                    Public YouTube URL
-                  </label>
-                  {liveUrlPreview && (
-                    <span className="font-[family-name:var(--font-mono)] text-[10px] text-emerald-500">
-                      READY · {liveUrlPreview.videoId}
-                    </span>
-                  )}
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-[var(--ink-primary)]">
+                    “{question}”
+                  </div>
+                  <div className="truncate font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
+                    {liveUrlPreview?.canonicalUrl || youtubeUrl}
+                  </div>
                 </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {servedFromCache && !isRunning && (
+                  <button
+                    type="button"
+                    onClick={() => handleTrace({ bypassCache: true })}
+                    title="Result served from cache — click to force a fresh live run across Gemini, Agent, Shop MCP, and Decisions"
+                    className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-500/20 dark:text-emerald-300"
+                  >
+                    <Zap className="h-3 w-3" />
+                    <span>Instant cache · Run live</span>
+                    <RefreshCw className="h-3 w-3" />
+                  </button>
+                )}
+
+                <div className="flex items-center gap-1.5 rounded-full bg-[var(--bg-sunken)] px-3 py-1 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-secondary)]">
+                  <Clock className="h-3.5 w-3.5 text-amber-500" />
+                  <span>{(elapsedMs / 1000).toFixed(1)}s</span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setEditQueryExpanded((v) => !v)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-3 py-1.5 text-xs font-medium text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Edit search</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Inline Expandable Search Editor */}
+            {editQueryExpanded && (
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleTrace();
+                }}
+                className="mt-4 grid grid-cols-1 gap-2.5 border-t border-[var(--border-subtle)] pt-4 sm:grid-cols-12"
+              >
                 <input
-                  id="youtube-url-input"
                   type="url"
                   required
                   value={youtubeUrl}
                   onChange={(e) => setYoutubeUrl(e.target.value)}
-                  placeholder="https://www.youtube.com/watch?v=... or /shorts/..."
-                  className="w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 py-2.5 font-[family-name:var(--font-mono)] text-xs text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:border-amber-500 focus:outline-none"
+                  placeholder="YouTube URL"
+                  className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none sm:col-span-5"
                 />
-              </div>
-
-              <div className="lg:col-span-5">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label
-                    htmlFor="shopper-question-input"
-                    className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]"
-                  >
-                    What should SceneTrace find?
-                  </label>
-                  <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
-                    Supports budget & size filters
-                  </span>
-                </div>
                 <input
-                  id="shopper-question-input"
                   type="text"
                   required
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
-                  placeholder="e.g., Which sneakers and jacket is he wearing in size M?"
-                  className="w-full rounded-md border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3 py-2.5 text-xs text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:border-amber-500 focus:outline-none"
+                  placeholder="What should SceneTrace find?"
+                  className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 text-xs text-[var(--ink-primary)] focus:border-[var(--border-strong)] focus:outline-none sm:col-span-5"
                 />
-              </div>
-
-              <div className="flex items-end lg:col-span-2">
                 <button
                   type="submit"
                   disabled={isRunning}
-                  className="inline-flex h-[38px] w-full items-center justify-center gap-2 rounded-md bg-amber-500 px-4 text-xs font-semibold text-neutral-950 transition-colors hover:bg-amber-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-[var(--cta-bg)] px-4 py-2 text-xs font-semibold text-[var(--cta-ink)] hover:bg-[var(--cta-hover)] disabled:opacity-50 sm:col-span-2"
                 >
-                  {isRunning ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Tracing…</span>
-                    </>
-                  ) : (
-                    <>
-                      <span>Trace items</span>
-                      <ArrowRight className="h-3.5 w-3.5" />
-                    </>
-                  )}
+                  <span>Re-trace</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
                 </button>
-              </div>
+              </form>
+            )}
+
+            {/* Clean Stepper */}
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-[var(--border-subtle)] pt-3.5 text-xs">
+              {[
+                {
+                  id: "extract",
+                  label: "Scene analysis",
+                  done:
+                    items.length > 0 ||
+                    stage === "complete" ||
+                    stage === "partial",
+                  active: stage === "extracting",
+                },
+                ...(companionFile
+                  ? [
+                      {
+                        id: "frames",
+                        label: "Frame crops",
+                        done:
+                          stage === "agent_investigating" ||
+                          stage === "matching" ||
+                          stage === "complete" ||
+                          stage === "partial",
+                        active: stage === "capturing_frames",
+                      },
+                    ]
+                  : []),
+                ...(managedAgentEnabled
+                  ? [
+                      {
+                        id: "agent",
+                        label: "Agent SKU research",
+                        done:
+                          stage === "matching" ||
+                          stage === "complete" ||
+                          stage === "partial",
+                        active: stage === "agent_investigating",
+                      },
+                    ]
+                  : []),
+                {
+                  id: "shop_decisions",
+                  label: "Shopify & Decisions rank",
+                  done: stage === "complete" || stage === "partial",
+                  active: stage === "matching",
+                },
+              ].map((step) => (
+                <span
+                  key={step.id}
+                  className={`inline-flex items-center gap-1.5 ${
+                    step.active
+                      ? "font-semibold text-amber-600 dark:text-amber-300"
+                      : step.done
+                        ? "font-medium text-emerald-600 dark:text-emerald-400"
+                        : "text-[var(--ink-muted)]"
+                  }`}
+                >
+                  {step.active ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : step.done ? (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <span className="h-1.5 w-1.5 rounded-full bg-current opacity-40" />
+                  )}
+                  <span>{step.label}</span>
+                </span>
+              ))}
             </div>
 
-            <div className="flex flex-col justify-between gap-2.5 border-t border-[var(--border-subtle)] pt-3 lg:flex-row lg:items-center">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 font-[family-name:var(--font-mono)] text-[10px] uppercase text-[var(--ink-muted)]">
-                  Prompts:
-                </span>
-                {QUESTION_PRESETS.map((preset) => (
-                  <button
-                    key={preset.short}
-                    type="button"
-                    onClick={() => setQuestion(preset.text)}
-                    className={`rounded border px-2 py-0.5 text-[11px] transition-colors ${
-                      question === preset.text
-                        ? "border-amber-500/45 bg-amber-500/12 text-amber-600 dark:text-amber-300"
-                        : "border-[var(--border-subtle)] bg-[var(--bg-sunken)] text-[var(--ink-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
-                    }`}
-                  >
-                    {preset.short}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
+            {traceError && (
+              <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-red-500/35 bg-red-500/10 px-4 py-2.5 text-xs text-red-600 dark:text-red-300">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  <span>{traceError}</span>
+                </div>
                 <button
                   type="button"
-                  onClick={() => setManagedAgentEnabled((v) => !v)}
-                  disabled={isRunning}
-                  title="Runs our saved Gemini Managed Agent (v1beta/agents · environment=remote) with Google Search + Python sandbox code execution to verify SKUs, MSRP, and search queries."
-                  className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] transition-colors ${
-                    managedAgentEnabled
-                      ? "border-emerald-500/45 bg-emerald-500/12 text-emerald-700 dark:text-emerald-300"
-                      : "border-[var(--border-subtle)] bg-[var(--bg-sunken)] text-[var(--ink-muted)]"
-                  }`}
+                  onClick={() => handleTrace()}
+                  className="inline-flex items-center gap-1 rounded-full border border-red-500/35 px-3 py-1 font-medium hover:bg-red-500/15"
                 >
-                  <Terminal className="h-3 w-3" />
-                  <span>
-                    Managed Agent: {managedAgentEnabled ? "ON" : "OFF"}
-                  </span>
+                  <RefreshCw className="h-3 w-3" />
+                  Retry
                 </button>
+              </div>
+            )}
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="video/mp4,video/webm,video/quicktime,image/jpeg,image/png,image/webp"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0] ?? null;
-                    setCompanionFile(f);
+            {frameWarning && (
+              <div className="mt-3 rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-xs text-amber-700 dark:text-amber-300">
+                {frameWarning}
+              </div>
+            )}
+          </section>
+
+          {/* Split Cinema + Showroom Layout */}
+          <section className="grid grid-cols-1 gap-6 lg:grid-cols-12">
+            {/* Left Sticky Cinema Column */}
+            <div className="lg:col-span-5">
+              <div className="lg:sticky lg:top-20">
+                <YouTubeMonitor
+                  videoId={activeVideoId}
+                  seekRequest={seekRequest}
+                  items={items}
+                  activeItemId={activeItemId}
+                  onSelectItemAndSeek={triggerSeek}
+                  onDurationDetected={(dur) => {
+                    youtubeDurationRef.current = dur;
                   }}
-                  className="hidden"
+                  framesByItem={framesByItem}
+                  hasCompanionMedia={Boolean(companionFile)}
                 />
-                {companionFile ? (
-                  <div className="inline-flex items-center gap-1.5 rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-amber-600 dark:text-amber-300">
-                    <Paperclip className="h-3 w-3 shrink-0" />
-                    <span className="max-w-[160px] truncate">
-                      {companionFile.name}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label="Remove companion file"
-                      onClick={() => {
-                        setCompanionFile(null);
-                        if (fileInputRef.current) {
-                          fileInputRef.current.value = "";
-                        }
-                      }}
-                      className="ml-0.5 rounded p-0.5 hover:bg-amber-500/20"
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
-                ) : (
+              </div>
+            </div>
+
+            {/* Right Showroom Dossiers Column */}
+            <div className="space-y-5 lg:col-span-7">
+              {extractDiagnostics?.videoSummary && (
+                <div className="surface-card rounded-2xl px-5 py-3.5 text-xs leading-relaxed text-[var(--ink-secondary)]">
+                  <span className="mr-2 font-semibold text-[var(--ink-primary)]">
+                    Scene overview:
+                  </span>
+                  {extractDiagnostics.videoSummary}
+                </div>
+              )}
+
+              {/* Multi-item Filter Tabs */}
+              {items.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => fileInputRef.current?.click()}
-                    title="Optional: Attach your local source .mp4 or reference still so SceneTrace extracts crisp supporting frames and bounding-box crops in-browser."
-                    className="inline-flex items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-secondary)] transition-colors hover:border-[var(--border-strong)] hover:text-[var(--ink-primary)]"
-                  >
-                    <Upload className="h-3 w-3 text-amber-500" />
-                    <span>+ Source .mp4 / still</span>
-                  </button>
-                )}
-              </div>
-            </div>
-          </form>
-
-          {stage !== "idle" && (
-            <div className="mt-3.5 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-3.5 py-2 font-[family-name:var(--font-mono)] text-[11px]">
-              <div className="flex flex-wrap items-center gap-3">
-                {[
-                  {
-                    id: "extract",
-                    label: "01 EXTRACT",
-                    done:
-                      items.length > 0 ||
-                      stage === "complete" ||
-                      stage === "partial",
-                    active: stage === "extracting",
-                  },
-                  {
-                    id: "frames",
-                    label: companionFile ? "02 FRAMES" : "02 SEEK",
-                    done:
-                      stage === "agent_investigating" ||
-                      stage === "matching" ||
-                      stage === "complete" ||
-                      stage === "partial",
-                    active: stage === "capturing_frames",
-                  },
-                  ...(managedAgentEnabled
-                    ? [
-                        {
-                          id: "agent",
-                          label: "03 MANAGED AGENT",
-                          done:
-                            stage === "matching" ||
-                            stage === "complete" ||
-                            stage === "partial",
-                          active: stage === "agent_investigating",
-                        },
-                      ]
-                    : []),
-                  {
-                    id: "shop_decisions",
-                    label: managedAgentEnabled
-                      ? "04 SHOP + DECISIONS"
-                      : "03 SHOP + DECISIONS",
-                    done: stage === "complete" || stage === "partial",
-                    active: stage === "matching",
-                  },
-                ].map((step) => (
-                  <span
-                    key={step.id}
-                    className={`inline-flex items-center gap-1.5 ${
-                      step.active
-                        ? "font-semibold text-amber-500"
-                        : step.done
-                          ? "text-emerald-500"
-                          : "text-[var(--ink-muted)]"
+                    onClick={() => setItemFilterId("all")}
+                    className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ${
+                      itemFilterId === "all"
+                        ? "border-[var(--border-strong)] bg-[var(--cta-bg)] text-[var(--cta-ink)]"
+                        : "border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
                     }`}
                   >
-                    {step.active ? (
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                    ) : step.done ? (
-                      <CheckCircle2 className="h-3 w-3" />
-                    ) : (
-                      <span className="h-1.5 w-1.5 rounded-full bg-current opacity-45" />
-                    )}
-                    <span>{step.label}</span>
-                  </span>
-                ))}
-              </div>
+                    All items ({items.length})
+                  </button>
+                  {items.map((it, idx) => (
+                    <button
+                      key={it.itemId}
+                      type="button"
+                      onClick={() => {
+                        setItemFilterId(it.itemId);
+                        triggerSeek(it.itemId, it.bestEvidenceSec);
+                      }}
+                      className={`rounded-full border px-3.5 py-1.5 text-xs font-medium transition-colors ${
+                        itemFilterId === it.itemId
+                          ? "border-[var(--border-strong)] bg-[var(--cta-bg)] text-[var(--cta-ink)]"
+                          : "border-[var(--border-subtle)] bg-[var(--bg-panel)] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
+                      }`}
+                    >
+                      {idx + 1}. {it.label}
+                    </button>
+                  ))}
+                </div>
+              )}
 
-              <div className="flex items-center gap-2 text-[var(--ink-secondary)]">
-                <Clock className="h-3 w-3" />
-                <span>{(elapsedMs / 1000).toFixed(1)}s</span>
-              </div>
-            </div>
-          )}
-
-          {traceError && (
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-600 dark:text-red-300">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <span>{traceError}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => handleTrace()}
-                className="inline-flex items-center gap-1 rounded border border-red-500/40 bg-red-500/15 px-2.5 py-1 font-[family-name:var(--font-mono)] text-[11px] font-medium hover:bg-red-500/25"
-              >
-                <RefreshCw className="h-3 w-3" />
-                Retry trace
-              </button>
-            </div>
-          )}
-
-          {frameWarning && (
-            <div className="mt-2.5 rounded-md border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-600 dark:text-amber-300">
-              {frameWarning}
-            </div>
-          )}
-        </section>
-
-        {/* Two-Pane Studio Workspace */}
-        <section className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          <div className="lg:col-span-5">
-            <div className="lg:sticky lg:top-16">
-              <YouTubeMonitor
-                videoId={activeVideoId}
-                seekRequest={seekRequest}
-                items={items}
-                activeItemId={activeItemId}
-                onSelectItemAndSeek={triggerSeek}
-                onDurationDetected={(dur) => {
-                  youtubeDurationRef.current = dur;
-                }}
-                framesByItem={framesByItem}
-                hasCompanionMedia={Boolean(companionFile)}
-              />
-            </div>
-          </div>
-
-          <div className="space-y-5 lg:col-span-7">
-            {extractDiagnostics?.videoSummary && (
-              <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-4 py-3 text-xs text-[var(--ink-secondary)]">
-                <span className="mr-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider text-amber-500">
-                  Scene Summary
-                </span>
-                {extractDiagnostics.videoSummary}
-              </div>
-            )}
-
-            {stage === "idle" && items.length === 0 && (
-              <div className="studio-grid-bg flex min-h-[340px] flex-col justify-between rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-6">
-                <div className="space-y-2">
-                  <div className="font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-widest text-amber-500">
-                    Video-to-Checkout Forensics
+              {stage === "extracting" && items.length === 0 && (
+                <div className="surface-card flex min-h-[300px] flex-col items-center justify-center gap-3 rounded-3xl p-8 text-center">
+                  <Loader2 className="h-6 w-6 animate-spin text-amber-500" />
+                  <div className="text-base font-semibold text-[var(--ink-primary)]">
+                    Watching the scene…
                   </div>
-                  <h1 className="max-w-xl text-xl font-semibold tracking-tight text-[var(--ink-primary)] sm:text-2xl">
-                    Trace products across cuts, investigate SKUs in a Managed
-                    Agent sandbox, and check out on Shopify.
-                  </h1>
-                  <p className="max-w-xl text-xs leading-relaxed text-[var(--ink-secondary)]">
-                    SceneTrace combines{" "}
-                    <span className="font-medium text-[var(--ink-primary)]">
-                      Gemini 4
-                    </span>{" "}
-                    video extraction, a persistent{" "}
-                    <span className="font-medium text-[var(--ink-primary)]">
-                      Gemini Managed Agent
-                    </span>{" "}
-                    remote sandbox, live{" "}
-                    <span className="font-medium text-[var(--ink-primary)]">
-                      Shop MCP
-                    </span>{" "}
-                    discovery, and calibrated{" "}
-                    <span className="font-medium text-[var(--ink-primary)]">
-                      Gemini Decisions
-                    </span>{" "}
-                    probability ranking.
+                  <p className="max-w-sm text-xs leading-relaxed text-[var(--ink-muted)]">
+                    Gemini is scanning visual frames, close-ups, and audio to
+                    pinpoint products and timestamps.
                   </p>
                 </div>
+              )}
 
-                <div className="mt-8 grid grid-cols-1 gap-3 border-t border-[var(--border-subtle)] pt-4 sm:grid-cols-2">
-                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3">
-                    <div className="font-[family-name:var(--font-mono)] text-[10px] text-amber-500">
-                      01 · GEMINI 4 + CROPS
-                    </div>
-                    <p className="mt-1 text-xs font-medium text-[var(--ink-primary)]">
-                      Cross-scene evidence
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">
-                      Links wide shots to close-ups and extracts bounding-box
-                      crops.
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3">
-                    <div className="font-[family-name:var(--font-mono)] text-[10px] text-emerald-500">
-                      02 · MANAGED AGENT SANDBOX
-                    </div>
-                    <p className="mt-1 text-xs font-medium text-[var(--ink-primary)]">
-                      Autonomous SKU & MSRP research
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">
-                      Runs Google Search + Python inside a hosted Linux sandbox
-                      with stateful follow-ups.
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3">
-                    <div className="font-[family-name:var(--font-mono)] text-[10px] text-amber-500">
-                      03 · DECISIONS API
-                    </div>
-                    <p className="mt-1 text-xs font-medium text-[var(--ink-primary)]">
-                      Calibrated reranking
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">
-                      Scores candidate variants with{" "}
-                      <code className="font-[family-name:var(--font-mono)]">
-                        gemini-decision-1
-                      </code>{" "}
-                      & hard-conflict gates.
-                    </p>
-                  </div>
-                  <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3">
-                    <div className="font-[family-name:var(--font-mono)] text-[10px] text-emerald-500">
-                      04 · SHOP MCP CHECKOUT
-                    </div>
-                    <p className="mt-1 text-xs font-medium text-[var(--ink-primary)]">
-                      End-to-end Shopify purchase
-                    </p>
-                    <p className="mt-0.5 text-[11px] text-[var(--ink-muted)]">
-                      Supports live size selection, freshness checks, and real
-                      merchant checkout.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {stage === "extracting" && items.length === 0 && (
-              <div className="flex min-h-[280px] flex-col items-center justify-center gap-3 rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-8 text-center">
-                <Loader2 className="h-6 w-6 animate-spin text-amber-500" />
-                <div className="text-sm font-medium text-[var(--ink-primary)]">
-                  Analyzing video scenes with {videoModel}…
-                </div>
-                <p className="max-w-sm text-xs text-[var(--ink-muted)]">
-                  Scanning visual frames, close-ups, captions, and audio to
-                  isolate distinct products and best-evidence timestamps.
-                </p>
-              </div>
-            )}
-
-            {stage === "complete" && items.length === 0 && !traceError && (
-              <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-8 text-center">
-                <p className="text-sm font-semibold text-[var(--ink-primary)]">
-                  No matching items detected in this clip
-                </p>
-                <p className="mx-auto mt-1 max-w-md text-xs text-[var(--ink-secondary)]">
-                  Gemini 4 did not find shoppable objects matching “{question}”.
-                  Try broadening your question or pasting another public YouTube
-                  clip.
-                </p>
-              </div>
-            )}
-
-            {/* Traced Item Cards */}
-            {items.map((item, itemIdx) => {
-              const offers = offersByItem[item.itemId] ?? [];
-              const isItemMatching = Boolean(matchingItemIds[item.itemId]);
-              const isAgentRunning = Boolean(agentRunningByItem[item.itemId]);
-              const agentReport = agentReportsByItem[item.itemId];
-              const stepsExpanded = Boolean(expandedAgentSteps[item.itemId]);
-              const followUpValue = agentFollowUpInputs[item.itemId] ?? "";
-              const itemDiag = matchDiagnosticsByItem[item.itemId];
-              const itemFrames = framesByItem[item.itemId] ?? [];
-              const topRankShift =
-                itemDiag?.rankComparison[0] &&
-                itemDiag.rankComparison[0].originalRank > 1
-                  ? itemDiag.rankComparison[0].originalRank
-                  : null;
-
-              return (
-                <article
-                  key={item.itemId}
-                  onClick={() => setActiveItemId(item.itemId)}
-                  className={`overflow-hidden rounded-xl border transition-colors ${
-                    activeItemId === item.itemId
-                      ? "border-[var(--border-strong)] bg-[var(--bg-panel)]"
-                      : "border-[var(--border-subtle)] bg-[var(--bg-panel)]"
-                  }`}
-                >
-                  {/* Item Dossier Header */}
-                  <div className="border-b border-[var(--border-subtle)] p-4 sm:p-5">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="space-y-1">
-                        <div className="flex flex-wrap items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider">
-                          <span className="rounded border border-[var(--border-strong)] bg-[var(--bg-sunken)] px-1.5 py-0.5 text-[var(--ink-secondary)]">
-                            ITEM {String(itemIdx + 1).padStart(2, "0")} ·{" "}
-                            {item.category}
-                          </span>
-                          {item.brand ? (
-                            <span className="rounded border border-emerald-500/30 bg-emerald-500/10 px-1.5 py-0.5 text-emerald-600 dark:text-emerald-300">
-                              BRAND · {item.brand}
-                            </span>
-                          ) : (
-                            <span className="rounded border border-[var(--border-subtle)] px-1.5 py-0.5 text-[var(--ink-muted)]">
-                              BRAND UNCONFIRMED
-                            </span>
-                          )}
-                          {item.modelReference && (
-                            <span className="rounded border border-amber-500/35 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-300">
-                              REF · {item.modelReference}
-                            </span>
-                          )}
-                        </div>
-                        <h2 className="text-base font-semibold text-[var(--ink-primary)] sm:text-lg">
-                          {item.label}
-                        </h2>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          triggerSeek(item.itemId, item.bestEvidenceSec);
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/45 bg-amber-500/12 px-3 py-1.5 font-[family-name:var(--font-mono)] text-xs font-medium text-amber-600 transition-colors hover:bg-amber-500/25 dark:text-amber-300"
-                      >
-                        <Play className="h-3 w-3 fill-current" />
-                        <span>
-                          See evidence @ {formatTimestamp(item.bestEvidenceSec)}
-                        </span>
-                      </button>
-                    </div>
-
-                    <p className="mt-2 text-xs leading-relaxed text-[var(--ink-secondary)]">
-                      {item.summary}
-                    </p>
-
-                    {itemFrames.length > 0 && (
-                      <div className="mt-3 flex items-center gap-2 overflow-x-auto pb-1">
-                        {itemFrames.map((fr, fIdx) => (
-                          <button
-                            key={`${item.itemId}_inline_${fIdx}`}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (fr.atSec !== null) {
-                                triggerSeek(item.itemId, fr.atSec);
-                              }
-                            }}
-                            className="group relative shrink-0 overflow-hidden rounded border border-[var(--border-subtle)] bg-black"
-                          >
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={fr.dataUrl}
-                              alt={fr.label}
-                              className="h-16 w-28 object-cover transition-opacity group-hover:opacity-90"
-                            />
-                            <span className="absolute bottom-1 left-1 rounded bg-black/80 px-1.5 py-0.5 font-[family-name:var(--font-mono)] text-[9px] text-amber-300">
-                              {fr.kind === "uploaded_still"
-                                ? "REF PHOTO"
-                                : fr.kind === "video_crop"
-                                  ? `CROP ${fr.atSec !== null ? formatTimestamp(fr.atSec) : ""}`
-                                  : `SCENE ${fr.atSec !== null ? formatTimestamp(fr.atSec) : ""}`}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    {item.features.length > 0 && (
-                      <div className="mt-3 flex flex-wrap gap-1.5">
-                        {item.features.slice(0, 6).map((feat, fIdx) => (
-                          <button
-                            key={`${item.itemId}_feat_${fIdx}`}
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              triggerSeek(item.itemId, feat.atSec);
-                            }}
-                            className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] transition-opacity hover:opacity-85 ${sourceBadgeClasses(feat.source)}`}
-                          >
-                            <span className="font-[family-name:var(--font-mono)] text-[9px] uppercase opacity-75">
-                              {feat.source}
-                            </span>
-                            <span className="font-medium">{feat.value}</span>
-                            <span className="font-[family-name:var(--font-mono)] text-[10px] opacity-70">
-                              @{formatTimestamp(feat.atSec)}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Gemini Managed Agent Remote Sandbox Console */}
-                    <div
-                      onClick={(e) => e.stopPropagation()}
-                      className="mt-4 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-sunken)] p-3"
+              {stage === "complete" && items.length === 0 && !traceError && (
+                <div className="surface-card rounded-3xl p-8 text-center">
+                  <p className="text-base font-semibold text-[var(--ink-primary)]">
+                    No matching products spotted in this clip
+                  </p>
+                  <p className="mx-auto mt-1.5 max-w-md text-xs leading-relaxed text-[var(--ink-secondary)]">
+                    We didn’t find shoppable items matching “{question}”. Click{" "}
+                    <button
+                      type="button"
+                      onClick={() => setEditQueryExpanded(true)}
+                      className="font-medium text-amber-500 underline"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 font-[family-name:var(--font-mono)] text-[10px] uppercase tracking-wider">
-                          <Terminal className="h-3.5 w-3.5 text-emerald-500" />
-                          <span className="font-semibold text-[var(--ink-primary)]">
-                            Gemini Managed Agent
-                          </span>
-                          {agentReport?.environmentId && (
-                            <span className="text-[var(--ink-muted)]">
-                              · sandbox {agentReport.environmentId.slice(0, 8)}
-                            </span>
-                          )}
-                          {agentReport?.msrpEstimate && (
-                            <span className="rounded border border-amber-500/35 bg-amber-500/10 px-1.5 py-0.5 text-amber-600 dark:text-amber-300">
-                              MSRP {agentReport.msrpEstimate}
-                            </span>
-                          )}
-                        </div>
+                      Edit search
+                    </button>{" "}
+                    or return{" "}
+                    <button
+                      type="button"
+                      onClick={handleGoHome}
+                      className="font-medium text-amber-500 underline"
+                    >
+                      Home
+                    </button>{" "}
+                    to try another clip.
+                  </p>
+                </div>
+              )}
 
-                        {isAgentRunning ? (
-                          <span className="inline-flex items-center gap-1.5 font-[family-name:var(--font-mono)] text-[10px] text-amber-500">
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                            Executing in remote Linux sandbox…
-                          </span>
-                        ) : agentReport ? (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setExpandedAgentSteps((prev) => ({
-                                ...prev,
-                                [item.itemId]: !prev[item.itemId],
-                              }))
-                            }
-                            className="inline-flex items-center gap-1 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-secondary)] hover:text-[var(--ink-primary)]"
-                          >
-                            <span>
-                              {agentReport.steps.length} sandbox{" "}
-                              {agentReport.steps.length === 1
-                                ? "step"
-                                : "steps"}
-                            </span>
-                            {stepsExpanded ? (
-                              <ChevronUp className="h-3 w-3" />
-                            ) : (
-                              <ChevronDown className="h-3 w-3" />
-                            )}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              runAgentForItem({
-                                targetItem: item,
-                                baseQuestion: question.trim(),
-                                primaryFrame: itemFrames[0] ?? null,
-                                reRunMatchAfter: true,
-                              })
-                            }
-                            className="rounded border border-emerald-500/40 bg-emerald-500/12 px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] font-medium text-emerald-600 hover:bg-emerald-500/20 dark:text-emerald-300"
-                          >
-                            Investigate in Sandbox
-                          </button>
-                        )}
-                      </div>
+              {visibleItems.map((item, idx) => {
+                const agentReport = agentReportsByItem[item.itemId];
+                const itemFrames = framesByItem[item.itemId] ?? [];
+                return (
+                  <ItemDossierCard
+                    key={item.itemId}
+                    item={item}
+                    itemIndex={idx}
+                    isSelected={activeItemId === item.itemId}
+                    onSelect={() => setActiveItemId(item.itemId)}
+                    onSeekTo={(sec) => triggerSeek(item.itemId, sec)}
+                    frames={itemFrames}
+                    offers={offersByItem[item.itemId] ?? []}
+                    isMatching={Boolean(matchingItemIds[item.itemId])}
+                    isAgentInvestigatingStage={stage === "agent_investigating"}
+                    itemDiag={matchDiagnosticsByItem[item.itemId]}
+                    agentReport={agentReport}
+                    isAgentRunning={Boolean(agentRunningByItem[item.itemId])}
+                    onRunAgent={(followUpPrompt) =>
+                      runAgentForItem({
+                        targetItem: item,
+                        baseQuestion: question.trim(),
+                        followUpPrompt,
+                        previousInteractionId:
+                          followUpPrompt && agentReport
+                            ? agentReport.interactionId
+                            : null,
+                        primaryFrame: itemFrames[0] ?? null,
+                        reRunMatchAfter: true,
+                      })
+                    }
+                    buyingOfferId={buyingOfferId}
+                    selectingVariantOfferId={selectingVariantOfferId}
+                    variantErrorsByOffer={variantSelectErrorByOffer}
+                    onSelectVariantOption={handleSelectVariantOption}
+                    onBuyOnShopify={(offer) =>
+                      executeCheckout({
+                        offerId: offer.offerId,
+                        offerToken: offer.offerToken,
+                        offerTitle: offer.title,
+                        sellerName: offer.sellerName,
+                      })
+                    }
+                    country={defaultCountry}
+                  />
+                );
+              })}
+            </div>
+          </section>
+        </main>
+      )}
 
-                      {agentReport && (
-                        <>
-                          <p className="mt-2 text-xs leading-relaxed text-[var(--ink-secondary)]">
-                            {agentReport.buyingBrief}
-                          </p>
-
-                          {stepsExpanded && agentReport.steps.length > 0 && (
-                            <div className="mt-2.5 space-y-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-2.5 font-[family-name:var(--font-mono)] text-[10px]">
-                              {agentReport.steps.map((st) => (
-                                <div key={st.stepIndex}>
-                                  <div className="text-emerald-500">
-                                    [{st.stepIndex}] {st.summary}
-                                  </div>
-                                  {st.detail && (
-                                    <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap text-[var(--ink-muted)]">
-                                      {st.detail}
-                                    </pre>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          <div className="mt-2.5 flex gap-2">
-                            <input
-                              type="text"
-                              value={followUpValue}
-                              onChange={(e) =>
-                                setAgentFollowUpInputs((prev) => ({
-                                  ...prev,
-                                  [item.itemId]: e.target.value,
-                                }))
-                              }
-                              onKeyDown={(e) => {
-                                if (
-                                  e.key === "Enter" &&
-                                  followUpValue.trim() &&
-                                  !isAgentRunning
-                                ) {
-                                  e.preventDefault();
-                                  const promptToRun = followUpValue.trim();
-                                  setAgentFollowUpInputs((prev) => ({
-                                    ...prev,
-                                    [item.itemId]: "",
-                                  }));
-                                  runAgentForItem({
-                                    targetItem: item,
-                                    baseQuestion: question.trim(),
-                                    followUpPrompt: promptToRun,
-                                    previousInteractionId:
-                                      agentReport.interactionId,
-                                    reRunMatchAfter: true,
-                                  });
-                                }
-                              }}
-                              placeholder="Ask sandbox agent to refine (e.g., 'find similar under $35', 'check sizing')…"
-                              className="flex-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2.5 py-1.5 text-[11px] text-[var(--ink-primary)] placeholder:text-[var(--ink-muted)] focus:border-amber-500 focus:outline-none"
-                            />
-                            <button
-                              type="button"
-                              disabled={!followUpValue.trim() || isAgentRunning}
-                              onClick={() => {
-                                const promptToRun = followUpValue.trim();
-                                if (!promptToRun) return;
-                                setAgentFollowUpInputs((prev) => ({
-                                  ...prev,
-                                  [item.itemId]: "",
-                                }));
-                                runAgentForItem({
-                                  targetItem: item,
-                                  baseQuestion: question.trim(),
-                                  followUpPrompt: promptToRun,
-                                  previousInteractionId:
-                                    agentReport.interactionId,
-                                  reRunMatchAfter: true,
-                                });
-                              }}
-                              className="inline-flex items-center gap-1 rounded border border-[var(--border-strong)] bg-[var(--bg-panel)] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-[10px] font-medium text-[var(--ink-primary)] hover:border-amber-500/50 disabled:opacity-45"
-                            >
-                              <Send className="h-3 w-3 text-amber-500" />
-                              <span>Refine</span>
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Ranked Shopify Offers Section */}
-                  <div className="bg-[var(--bg-sunken)]/60 p-4 sm:p-5">
-                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 font-[family-name:var(--font-mono)] text-[11px] uppercase tracking-wider text-[var(--ink-secondary)]">
-                        <span>Ranked Shopify Offers</span>
-                        {!isItemMatching && (
-                          <span className="text-[var(--ink-muted)]">
-                            ({offers.length})
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {topRankShift && (
-                          <span className="inline-flex items-center gap-1 rounded border border-emerald-500/40 bg-emerald-500/12 px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] font-semibold text-emerald-600 dark:text-emerald-300">
-                            <ArrowUpRight className="h-3 w-3" />
-                            Decisions promoted Shop #{topRankShift} → #1
-                          </span>
-                        )}
-                        {itemDiag?.usedVisualSearch && (
-                          <span className="inline-flex items-center gap-1 rounded border border-[var(--border-subtle)] bg-[var(--bg-panel)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-secondary)]">
-                            <Film className="h-3 w-3 text-amber-500" />
-                            Visual + Text Search
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    {(isItemMatching ||
-                      (stage === "agent_investigating" &&
-                        offers.length === 0)) && (
-                      <div className="flex items-center gap-2.5 rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 text-xs text-[var(--ink-secondary)]">
-                        <Loader2 className="h-4 w-4 animate-spin text-amber-500" />
-                        <span>
-                          {stage === "agent_investigating"
-                            ? "Enriching SKU & retail queries in Managed Agent sandbox before catalog search…"
-                            : "Querying Shop MCP catalog & scoring variants with gemini-decision-1…"}
-                        </span>
-                      </div>
-                    )}
-
-                    {!isItemMatching && itemDiag?.shopError && (
-                      <div className="rounded-lg border border-red-500/35 bg-red-500/10 p-3.5 text-xs text-red-500 dark:text-red-300">
-                        Catalog search failed for this item:{" "}
-                        {itemDiag.shopError}
-                      </div>
-                    )}
-
-                    {!isItemMatching &&
-                      stage !== "agent_investigating" &&
-                      !itemDiag?.shopError &&
-                      offers.length === 0 && (
-                        <div className="rounded-lg border border-[var(--border-subtle)] bg-[var(--bg-panel)] p-4 text-xs text-[var(--ink-muted)]">
-                          No in-stock Shopify catalog offers matched this item
-                          in {defaultCountry}. Use the Managed Agent bar above
-                          to broaden or refine the search.
-                        </div>
-                      )}
-
-                    {!isItemMatching && offers.length > 0 && (
-                      <div className="space-y-3">
-                        {offers.map((offer, offerIdx) => {
-                          const badge = matchBadgeMeta(offer.matchLabel);
-                          const isBuyingThis = buyingOfferId === offer.offerId;
-                          const isSelectingThis =
-                            selectingVariantOfferId === offer.offerId;
-                          const isUnavailable =
-                            offer.availability === "unavailable";
-                          const variantErr =
-                            variantSelectErrorByOffer[offer.offerId];
-
-                          return (
-                            <div
-                              key={offer.offerId}
-                              className={`rounded-lg border bg-[var(--bg-panel)] p-3.5 transition-colors ${
-                                offerIdx === 0 &&
-                                offer.matchLabel === "exact_supported"
-                                  ? "border-emerald-500/45"
-                                  : "border-[var(--border-subtle)] hover:border-[var(--border-strong)]"
-                              }`}
-                            >
-                              <div className="flex flex-col gap-3.5 sm:flex-row">
-                                <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-md border border-[var(--border-subtle)] bg-[var(--bg-sunken)]">
-                                  {offer.imageUrl ? (
-                                    // eslint-disable-next-line @next/next/no-img-element
-                                    <img
-                                      src={offer.imageUrl}
-                                      alt={offer.title}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <div className="flex h-full w-full items-center justify-center font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
-                                      NO IMG
-                                    </div>
-                                  )}
-                                  <span className="absolute bottom-1 left-1 rounded bg-black/75 px-1 py-0.5 font-[family-name:var(--font-mono)] text-[8px] uppercase tracking-wider text-neutral-200">
-                                    LISTING
-                                  </span>
-                                </div>
-
-                                <div className="min-w-0 flex-1 space-y-2">
-                                  <div className="flex flex-wrap items-center justify-between gap-2">
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                      <span
-                                        className={`rounded border px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] font-medium ${badge.classes}`}
-                                      >
-                                        {badge.text}
-                                      </span>
-                                      <span className="font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-muted)]">
-                                        #{offerIdx + 1} (Shop #
-                                        {offer.originalSearchRank})
-                                      </span>
-                                    </div>
-
-                                    <div className="font-[family-name:var(--font-mono)] text-sm font-bold text-[var(--ink-primary)]">
-                                      {formatMoneyMinor(
-                                        offer.amountMinor,
-                                        offer.currency,
-                                      )}
-                                    </div>
-                                  </div>
-
-                                  <div>
-                                    <h3 className="text-sm font-semibold text-[var(--ink-primary)]">
-                                      {offer.title}
-                                    </h3>
-                                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-[var(--ink-secondary)]">
-                                      <span className="font-medium">
-                                        {offer.sellerName}
-                                      </span>
-                                      <span className="font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-muted)]">
-                                        ({offer.sellerDomain})
-                                      </span>
-                                      <span
-                                        className={`font-[family-name:var(--font-mono)] text-[10px] uppercase ${
-                                          offer.availability === "available"
-                                            ? "text-emerald-500"
-                                            : offer.availability ===
-                                                "unavailable"
-                                              ? "text-red-400"
-                                              : "text-[var(--ink-muted)]"
-                                        }`}
-                                      >
-                                        ·{" "}
-                                        {offer.availability === "available"
-                                          ? "In stock"
-                                          : offer.availability === "unavailable"
-                                            ? "Sold out"
-                                            : "Availability at checkout"}
-                                      </span>
-                                    </div>
-                                  </div>
-
-                                  {/* Interactive Variant / Size Option Selector when multi-option groups exist */}
-                                  {offer.availableOptions &&
-                                  offer.availableOptions.length > 0 ? (
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      {offer.availableOptions.map((group) => {
-                                        const currentVal =
-                                          offer.options.find(
-                                            (o) =>
-                                              o.name.toLowerCase() ===
-                                              group.name.toLowerCase(),
-                                          )?.label ??
-                                          group.values[0] ??
-                                          "";
-                                        return (
-                                          <label
-                                            key={`${offer.offerId}_grp_${group.name}`}
-                                            className="inline-flex items-center gap-1.5 rounded border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-secondary)]"
-                                          >
-                                            <span>{group.name}:</span>
-                                            <select
-                                              value={currentVal}
-                                              disabled={isSelectingThis}
-                                              onChange={(e) =>
-                                                handleSelectVariantOption({
-                                                  item,
-                                                  offer,
-                                                  optionName: group.name,
-                                                  optionValue: e.target.value,
-                                                })
-                                              }
-                                              className="bg-transparent font-semibold text-[var(--ink-primary)] focus:outline-none"
-                                            >
-                                              {group.values.map((val) => (
-                                                <option key={val} value={val}>
-                                                  {val}
-                                                </option>
-                                              ))}
-                                            </select>
-                                          </label>
-                                        );
-                                      })}
-                                      {isSelectingThis && (
-                                        <Loader2 className="h-3 w-3 animate-spin text-amber-500" />
-                                      )}
-                                    </div>
-                                  ) : (
-                                    offer.options.length > 0 && (
-                                      <div className="flex flex-wrap gap-1.5">
-                                        {offer.options.map((opt) => (
-                                          <span
-                                            key={`${offer.offerId}_${opt.name}_${opt.label}`}
-                                            className="rounded border border-[var(--border-subtle)] bg-[var(--bg-sunken)] px-2 py-0.5 font-[family-name:var(--font-mono)] text-[10px] text-[var(--ink-secondary)]"
-                                          >
-                                            {opt.name}: {opt.label}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )
-                                  )}
-
-                                  {variantErr && (
-                                    <p className="text-[11px] text-amber-500">
-                                      {variantErr}
-                                    </p>
-                                  )}
-
-                                  <p className="text-xs leading-relaxed text-[var(--ink-secondary)]">
-                                    {offer.rationale}
-                                  </p>
-
-                                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                                    <a
-                                      href={offer.productUrl}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="inline-flex items-center gap-1 font-[family-name:var(--font-mono)] text-[11px] text-[var(--ink-secondary)] hover:text-amber-500"
-                                    >
-                                      <span>View merchant listing</span>
-                                      <ExternalLink className="h-3 w-3" />
-                                    </a>
-
-                                    <button
-                                      type="button"
-                                      disabled={
-                                        isUnavailable ||
-                                        isSelectingThis ||
-                                        Boolean(buyingOfferId)
-                                      }
-                                      onClick={() =>
-                                        executeCheckout({
-                                          offerId: offer.offerId,
-                                          offerToken: offer.offerToken,
-                                          offerTitle: offer.title,
-                                          sellerName: offer.sellerName,
-                                        })
-                                      }
-                                      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-500 px-3.5 py-1.5 text-xs font-semibold text-neutral-950 transition-colors hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 disabled:cursor-not-allowed disabled:opacity-45"
-                                    >
-                                      {isBuyingThis ? (
-                                        <>
-                                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                          <span>Preparing…</span>
-                                        </>
-                                      ) : (
-                                        <>
-                                          <ShoppingBag className="h-3.5 w-3.5" />
-                                          <span>Buy on Shopify</span>
-                                        </>
-                                      )}
-                                    </button>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-        </section>
-      </main>
-
-      {/* Checkout Handoff & Order Status Modal */}
       <CheckoutModal
         open={checkoutModalOpen}
         onClose={() => setCheckoutModalOpen(false)}
@@ -2043,8 +1420,6 @@ export function SceneTraceStudio({
         priceChangePrompt={priceChangePrompt}
         onConfirmPriceChange={() => {
           if (!priceChangePrompt) return;
-          // Submitting `updatedOfferToken` through normal verification compares against the newly
-          // approved price — so a second price jump still prompts again rather than bypassing!
           executeCheckout({
             offerId: "price_confirm",
             offerToken: priceChangePrompt.change.updatedOfferToken,
@@ -2056,7 +1431,6 @@ export function SceneTraceStudio({
         refreshingStatus={refreshingCheckoutStatus}
       />
 
-      {/* Judge Diagnostics & Rerank Proof Drawer */}
       <DiagnosticsDrawer
         open={diagnosticsOpen}
         onClose={() => setDiagnosticsOpen(false)}

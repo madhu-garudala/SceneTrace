@@ -1,6 +1,11 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  buildCacheKey,
+  clearServerCacheForTests,
+  withServerCache,
+} from "@/lib/cache/store";
+import {
   applyScoresAndSortCandidates,
   detectHardConflict,
   extractColorFamilies,
@@ -600,5 +605,47 @@ describe("Decisions ranking, noul vs confidence, brand/color gates & candidate a
 
     expect(ranked[0].matchLabel).not.toBe("exact_supported");
     expect(ranked[0].matchLabel).toBe("possible");
+  });
+});
+
+describe("Two-layer server cache & in-flight deduplication", () => {
+  it("serves cached entries instantly, deduplicates concurrent calls, and honors bypass=true", async () => {
+    clearServerCacheForTests();
+    const key = buildCacheKey("unit_cache", {
+      videoId: "abc",
+      nonce: Date.now(),
+    });
+    let invocations = 0;
+
+    const compute = async () => {
+      invocations++;
+      await new Promise((r) => setTimeout(r, 15));
+      return { count: invocations };
+    };
+
+    // Concurrent calls share the single in-flight promise
+    const [r1, r2] = await Promise.all([
+      withServerCache({ key, ttlMs: 60_000, compute }),
+      withServerCache({ key, ttlMs: 60_000, compute }),
+    ]);
+    expect(invocations).toBe(1);
+    expect(r1.value.count).toBe(1);
+    expect(r2.value.count).toBe(1);
+
+    // Subsequent call hits cache with zero compute executions
+    const r3 = await withServerCache({ key, ttlMs: 60_000, compute });
+    expect(r3.cacheHit).toBe(true);
+    expect(invocations).toBe(1);
+
+    // bypass=true forces fresh live execution and updates cached value
+    const r4 = await withServerCache({
+      key,
+      ttlMs: 60_000,
+      bypass: true,
+      compute,
+    });
+    expect(r4.cacheHit).toBe(false);
+    expect(r4.value.count).toBe(2);
+    expect(invocations).toBe(2);
   });
 });
