@@ -19,6 +19,11 @@ const MODEL_META: Record<
   AllowedVideoModel,
   { short: string; name: string; desc: string }
 > = {
+  "gemini-4-hydrogen": {
+    short: "Hydrogen 4",
+    name: "Gemini 4 Hydrogen",
+    desc: "Ultra-fast ~5s scene inference (default)",
+  },
   "gemini-4-neon": {
     short: "Neon 4",
     name: "Gemini 4 Neon",
