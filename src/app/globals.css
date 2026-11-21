@@ -1,0 +1,59 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --bg-canvas: #f5f4f0;
+  --bg-panel: #ffffff;
+  --bg-sunken: #eceae4;
+  --bg-elevated: #faf9f6;
+  --border-subtle: rgba(18, 20, 26, 0.1);
+  --border-strong: rgba(18, 20, 26, 0.22);
+  --ink-primary: #111318;
+  --ink-secondary: #4b5262;
+  --ink-muted: #767d8e;
+  --signal-amber: #d97706;
+  --signal-emerald: #059669;
+}
+
+.dark {
+  --bg-canvas: #090a0d;
+  --bg-panel: #101217;
+  --bg-sunken: #0b0d11;
+  --bg-elevated: #161921;
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.18);
+  --ink-primary: #f3f4f6;
+  --ink-secondary: #9ca3af;
+  --ink-muted: #6b7280;
+  --signal-amber: #f59e0b;
+  --signal-emerald: #10b981;
+}
+
+@layer base {
+  html {
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    background-color: var(--bg-canvas);
+    color: var(--ink-primary);
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background-color: rgba(245, 158, 11, 0.25);
+    color: inherit;
+  }
+}
+
+.studio-grid-bg {
+  background-image: radial-gradient(
+    var(--border-subtle) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}

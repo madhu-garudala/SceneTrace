@@ -1,0 +1,130 @@
+{
+  "executedAt": "2026-11-21T18:17:59.101Z",
+  "completedAt": "2026-11-21T18:19:51.236Z",
+  "controlledUnitEval": {
+    "totalCases": 3,
+    "positiveCases": 2,
+    "baselineTop1": 0,
+    "singleFrameTop1": 2,
+    "crossSceneTop1": 2,
+    "falseExactSingle": 0,
+    "falseExactCross": 0
+  },
+  "realYouTubeClipsEval": {
+    "totalClips": 3,
+    "retrievalHits": 3,
+    "shopOrderTop1Hits": 2,
+    "decisionsRerankTop1Hits": 3,
+    "falseExactSupportedCount": 2,
+    "clips": [
+      {
+        "clipId": "clip_casio_f91w_short",
+        "canonicalUrl": "https://www.youtube.com/watch?v=8nJbKQYEH2M",
+        "videoModel": "gemini-4-neon",
+        "extractedItem": {
+          "label": "Casio F-91W Black Resin Digital Watch",
+          "brand": "Casio",
+          "modelReference": "F-91W",
+          "sightingCount": 8,
+          "bestEvidenceSec": 11,
+          "queries": [
+            "Casio F-91W black resin digital watch",
+            "Casio F-91W alarm chronograph wristwatch",
+            "black resin rectangular digital wristwatch"
+          ]
+        },
+        "timingsMs": {
+          "extractMs": 26308,
+          "shopMs": 582,
+          "decisionsMs": 6971
+        },
+        "evidenceMode": "catalog_images_and_text",
+        "candidateCount": 6,
+        "retrievalHit": true,
+        "shopOrderTop1Correct": false,
+        "decisionsRerankTop1Correct": true,
+        "falseExactCount": 0,
+        "topOffer": {
+          "title": "Casio Vintage Classic Digital Black Resin Watch - F-91W-1YEG",
+          "sellerName": "TikTik Watch",
+          "originalSearchRank": 4,
+          "exactMatchYes": 0.9209910189427749,
+          "confidence": 0.9209910189427749,
+          "matchLabel": "exact_supported"
+        }
+      },
+      {
+        "clipId": "clip_aeropress_short",
+        "canonicalUrl": "https://www.youtube.com/watch?v=b_jiA2jZjXw",
+        "videoModel": "gemini-4-neon",
+        "extractedItem": {
+          "label": "AeroPress Original Coffee Maker",
+          "brand": "AeroPress",
+          "modelReference": "Original",
+          "sightingCount": 4,
+          "bestEvidenceSec": 34,
+          "queries": [
+            "AeroPress Original coffee maker",
+            "AeroPress smoky gray manual coffee press",
+            "manual immersion air pressure coffee brewer"
+          ]
+        },
+        "timingsMs": {
+          "extractMs": 37117,
+          "shopMs": 767,
+          "decisionsMs": 7306
+        },
+        "evidenceMode": "catalog_images_and_text",
+        "candidateCount": 6,
+        "retrievalHit": true,
+        "shopOrderTop1Correct": true,
+        "decisionsRerankTop1Correct": true,
+        "falseExactCount": 0,
+        "topOffer": {
+          "title": "AeroPress Coffee Maker - Original",
+          "sellerName": "AeroPress",
+          "originalSearchRank": 1,
+          "exactMatchYes": 0.907560864231537,
+          "confidence": 0.907560864231537,
+          "matchLabel": "exact_supported"
+        }
+      },
+      {
+        "clipId": "clip_adidas_samba_review",
+        "canonicalUrl": "https://www.youtube.com/watch?v=t-oFOuz-vFY",
+        "videoModel": "gemini-4-neon",
+        "extractedItem": {
+          "label": "Adidas Samba White/Black/Gum Sneakers",
+          "brand": "Adidas",
+          "modelReference": "Samba",
+          "sightingCount": 3,
+          "bestEvidenceSec": 3,
+          "queries": [
+            "Adidas Samba OG White Black Gum",
+            "Adidas Samba white leather grey suede sneakers",
+            "white black three stripe gum sole sneakers"
+          ]
+        },
+        "timingsMs": {
+          "extractMs": 24309,
+          "shopMs": 706,
+          "decisionsMs": 6976
+        },
+        "evidenceMode": "catalog_images_and_text",
+        "candidateCount": 6,
+        "retrievalHit": true,
+        "shopOrderTop1Correct": true,
+        "decisionsRerankTop1Correct": true,
+        "falseExactCount": 2,
+        "topOffer": {
+          "title": "adidas Samba OG Sneakers - White Black Gum | B75806",
+          "sellerName": "Adidas Store",
+          "originalSearchRank": 3,
+          "exactMatchYes": 0.9379302074477056,
+          "confidence": 0.9379302074477056,
+          "matchLabel": "exact_supported"
+        }
+      }
+    ]
+  }
+}

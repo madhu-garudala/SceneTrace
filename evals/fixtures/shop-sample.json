@@ -1,0 +1,38 @@
+{
+  "capturedAt": "2026-11-21T18:17:16.467Z",
+  "protocolVersion": "2026-07-28",
+  "query": "ceramic coffee mug",
+  "candidateCount": 6,
+  "sampleCandidate": {
+    "productId": "gid://shopify/p/49J3AyHekUe8xxYCJVdi2Q",
+    "variantId": "gid://shopify/ProductVariant/46581514764458",
+    "sellerDomain": "nova-ceramics.myshopify.com",
+    "sellerName": "Nova Ceramics",
+    "title": "Monsoon Cup 16oz",
+    "descriptionSnippet": "Each cup features a unique glazing process, ensuring every piece is one-of-a-kind. • High quality stoneware ceramic construction preserves pure coffee taste • Fitted silicone lid and heat band keep drinks warm and prevent spills • Microwave and dishwasher safe for easy use and cleaning",
+    "options": [
+      {
+        "name": "Length",
+        "label": "5.7 in"
+      },
+      {
+        "name": "Width",
+        "label": "3.2 in"
+      },
+      {
+        "name": "Capacity",
+        "label": "16 fl oz"
+      }
+    ],
+    "availableOptions": [],
+    "amountMinor": 3499,
+    "currency": "USD",
+    "availability": "available",
+    "condition": "new",
+    "productUrl": "https://novaceramics.co/products/monsoon-cup-16oz-includes-lid-band",
+    "imageUrl": "https://cdn.shopify.com/s/files/1/0605/8816/3242/files/LargeMonsoonMugLidPackshot.jpg",
+    "warnings": [],
+    "offerId": "offer_1_d7522960",
+    "originalSearchRank": 1
+  }
+}

@@ -1,0 +1,32 @@
+[
+  {
+    "clipId": "clip_casio_f91w_short",
+    "youtubeUrl": "https://www.youtube.com/shorts/8nJbKQYEH2M",
+    "question": "Which wristwatch is shown in this clip?",
+    "groundTruth": {
+      "category": "wristwatch",
+      "expectedBrand": "casio",
+      "expectedModelTokens": ["f91w"]
+    }
+  },
+  {
+    "clipId": "clip_aeropress_short",
+    "youtubeUrl": "https://www.youtube.com/shorts/b_jiA2jZjXw",
+    "question": "Which coffee brewer is demonstrated in this clip?",
+    "groundTruth": {
+      "category": "coffee brewer",
+      "expectedBrand": "aeropress",
+      "expectedModelTokens": ["aeropress"]
+    }
+  },
+  {
+    "clipId": "clip_adidas_samba_review",
+    "youtubeUrl": "https://www.youtube.com/watch?v=t-oFOuz-vFY",
+    "question": "Which sneakers are being unboxed and reviewed in this video?",
+    "groundTruth": {
+      "category": "sneakers",
+      "expectedBrand": "adidas",
+      "expectedModelTokens": ["samba"]
+    }
+  }
+]
