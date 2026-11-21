@@ -16,6 +16,8 @@ export type VoiceBarProps = {
    * sugar free one" gives "the sugar free one"). Returns what to say back.
    */
   onConfirm?: (yes: boolean, rest: string) => string | void | Promise<string | void>;
+  /** "the one from Craftedyogi": returns what to say if it names a listed offer, else null. */
+  onDescribe?: (utterance: string) => string | null;
   disabled?: boolean;
 };
 
@@ -69,7 +71,9 @@ const LOOP_WINDOW_MS = 10_000;
 const YES_RE = /^\s*(yes|yeah|yep|yup|sure|correct|right|perfect|do it|go ahead|add it|that one|sounds good|ok(?:ay)?)\b/i;
 const NO_RE = /^\s*(?:no|nope|nah|not (?:that|this)(?: one)?|wrong one|actually)\b[\s,.!]*(.*)$/i;
 
-export function VoiceBar({ context, onIntent, onConfirm, disabled }: VoiceBarProps) {
+const DESCRIBE_CUE_RE = /\b(one|from|version|instead|seller|store|shop|renewed|refurbished|cheaper|cheapest|other)\b/i;
+
+export function VoiceBar({ context, onIntent, onConfirm, onDescribe, disabled }: VoiceBarProps) {
   const [enabled, setEnabled] = useState(false);
   // The navbar's backdrop blur makes it the containing block for fixed
   // children, so the prompt strip is portalled to <body> to sit at the bottom.
@@ -86,6 +90,8 @@ export function VoiceBar({ context, onIntent, onConfirm, disabled }: VoiceBarPro
   onIntentRef.current = onIntent;
   const onConfirmRef = useRef(onConfirm);
   onConfirmRef.current = onConfirm;
+  const onDescribeRef = useRef(onDescribe);
+  onDescribeRef.current = onDescribe;
 
   const handleResult = useCallback(
     async (utterance: string) => {
@@ -111,6 +117,21 @@ export function VoiceBar({ context, onIntent, onConfirm, disabled }: VoiceBarPro
         }
       }
 
+      // "the one from <store>" / "the renewed one": pick among the offers on
+      // screen locally. No round trip, and never mistaken for a new search.
+      if (
+        contextRef.current.hasOffers &&
+        onDescribeRef.current &&
+        (contextRef.current.awaitingConfirm || DESCRIBE_CUE_RE.test(utterance))
+      ) {
+        const answer = onDescribeRef.current(utterance);
+        if (answer) {
+          setLast({ intent: "select_offer", confidence: 1 });
+          say(answer);
+          return;
+        }
+      }
+
       let data: VoiceIntentResponse;
       try {
         const res = await fetch("/api/voice/intent", {
@@ -124,6 +145,13 @@ export function VoiceBar({ context, onIntent, onConfirm, disabled }: VoiceBarPro
         return;
       }
       setLast({ intent: data.intent, confidence: data.confidence });
+
+      // While "Add this one?" is open, don't throw the shopper into a new
+      // 30-second search because a description was misheard.
+      if (contextRef.current.awaitingConfirm && data.intent === "trace") {
+        say("Say yes, no, or which one you want.");
+        return;
+      }
 
       const now = Date.now();
       const recent = (history.current[data.intent] ?? []).filter((t) => now - t <= LOOP_WINDOW_MS);

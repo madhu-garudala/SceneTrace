@@ -814,11 +814,11 @@ export function SceneTraceStudio({
       await Promise.all(workers);
       if (runId !== activeRunIdRef.current) return;
 
-      // Camera stills that show visible damage get the repair check started
-      // automatically, in the background, once offers are already on screen.
-      if (useCamera) {
-        const damaged = workingItems.find((it) => it.condition?.damageVisible);
-        if (damaged) void runRepair(damaged, damaged.condition?.signs.join("; "));
+      // Camera stills get the repair check started automatically, in the
+      // background, once offers are already on screen (damaged items first).
+      if (useCamera && workingItems.length > 0) {
+        const target = workingItems.find((it) => it.condition?.damageVisible) ?? workingItems[0];
+        void runRepair(target, target.condition?.signs.join("; ") || undefined);
       }
 
       if (agentRun) {
@@ -1384,25 +1384,86 @@ export function SceneTraceStudio({
     setPendingOffer({ itemId: activeItem.itemId, offerId: o.offerId });
     return `${lead} ${speakableTitle(o)} from ${o.sellerName}?`;
   };
+  /**
+   * Which offer does the shopper mean? Words shared by every offer ("sony",
+   * "headphones") say nothing, so each word counts by how few offers have it.
+   * Store names are matched on letters alone and loosely, because speech-to-text
+   * mangles them ("you green us" for UGREEN US).
+   */
   const findOfferByWords = (text: string): number => {
-    const words = text.toLowerCase().split(/\W+/).filter((w) => w.length > 2 && !["the", "one", "that", "with", "instead", "want", "like", "version"].includes(w));
-    if (!words.length) return -1;
-    let best = -1;
-    let bestScore = 0;
-    activeOffers.forEach((o, i) => {
-      const hay = `${o.title} ${o.sellerName} ${o.options.map((op) => op.label).join(" ")}`.toLowerCase();
-      const score = words.filter((w) => hay.includes(w)).length;
-      if (score > bestScore) {
-        best = i;
-        bestScore = score;
+    if (!activeOffers.length) return -1;
+    const STOP = new Set(["the", "one", "that", "this", "with", "instead", "want", "like", "version", "can", "you", "add", "from", "please", "cart", "card", "bag", "buy", "get", "and", "for", "not", "its", "it's", "how", "about", "what"]);
+    const words = text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
+    const flat = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const hays = activeOffers.map((o) =>
+      `${o.title} ${o.sellerName} ${o.sellerDomain} ${o.condition ?? ""} ${o.options.map((op) => op.label).join(" ")}`.toLowerCase(),
+    );
+    const n = activeOffers.length;
+    const editDistance = (a: string, b: string) => {
+      const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+      for (let i = 1; i <= a.length; i++) {
+        let prev = dp[0];
+        dp[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+          const tmp = dp[j];
+          dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+          prev = tmp;
+        }
       }
+      return dp[b.length];
+    };
+    const sellerScore = (seller: string) => {
+      const sFlat = seller.toLowerCase().replace(/[^a-z0-9]/g, "");
+      if (sFlat.length < 3) return 0;
+      if (flat.includes(sFlat)) return 3;
+      const L = sFlat.length;
+      const allowed = Math.max(1, Math.floor(L * 0.3));
+      for (let len = Math.max(3, L - 1); len <= L + 2; len++) {
+        for (let i = 0; i + len <= flat.length; i++) {
+          if (editDistance(flat.slice(i, i + len), sFlat) <= allowed) return 2;
+        }
+      }
+      return 0;
+    };
+    const scores = activeOffers.map((o, i) => {
+      let score = Math.max(sellerScore(o.sellerName), sellerScore(o.sellerDomain.split(".")[0] ?? ""));
+      for (const w of words) {
+        if (!hays[i].includes(w)) continue;
+        const df = hays.filter((h) => h.includes(w)).length;
+        score += 1 - df / n;
+      }
+      return score;
     });
-    return best;
+    const best = Math.max(...scores);
+    if (best < 0.4) return -1;
+    const tops = scores.filter((x) => x === best).length;
+    return tops === 1 ? scores.indexOf(best) : -1;
   };
   const pendingOfferObj =
     pendingOffer && activeItem && pendingOffer.itemId === activeItem.itemId
       ? activeOffers.find((o) => o.offerId === pendingOffer.offerId) ?? null
       : null;
+
+  /** A description of one of the listed offers, answered without a server round trip. */
+  const handleVoiceDescribe = (utterance: string): string | null => {
+    let idx = findOfferByWords(utterance);
+    if (idx < 0 && /\bcheap(er|est)?\b|\blowest price\b|\bless expensive\b/i.test(utterance)) {
+      // Cheapest in the same currency as the top offer; cross-currency prices don't compare.
+      const cur = activeOffers[0]?.currency;
+      let bestPrice = Infinity;
+      activeOffers.forEach((o, i) => {
+        if (o.amountMinor != null && o.currency === cur && o.availability !== "unavailable" && o.amountMinor < bestPrice) {
+          bestPrice = o.amountMinor;
+          idx = i;
+        }
+      });
+    }
+    if (idx < 0) return null;
+    const o = activeOffers[idx];
+    if (o.offerId === pendingOfferObj?.offerId) return `Yes, ${speakableTitle(o)}. Add it?`;
+    setSelectedOfferIdx(idx);
+    return askToAdd(o, pendingOfferObj ? "How about" : "This one?") ?? null;
+  };
 
   const handleVoiceConfirm = (yes: boolean, rest: string): string | void => {
     const offer = pendingOfferObj;
@@ -1629,6 +1690,7 @@ export function SceneTraceStudio({
             context={voiceContext}
             onIntent={handleVoiceIntent}
             onConfirm={handleVoiceConfirm}
+            onDescribe={handleVoiceDescribe}
           />
         }
       />
