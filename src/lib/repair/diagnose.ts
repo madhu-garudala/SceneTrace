@@ -460,6 +460,8 @@ export async function diagnoseRepair(params: {
   mimeType: string;
   item: TracedItem;
   note?: string;
+  /** The owner said it is broken. What they say counts even when the photo can't show it. */
+  ownerReported?: boolean;
   signal?: AbortSignal;
 }): Promise<RepairVerdict> {
   const t0 = Date.now();
@@ -469,7 +471,9 @@ export async function diagnoseRepair(params: {
   const bank = await timed(() => writeQuestionBank({ item, image, note, signal }));
   const scores = await timed(() => scoreBank({ bank: bank.value, image, signal }));
   const faults = buildFaults(bank.value, scores.value);
-  const damage = damageLevel(faults);
+  // A fault the owner reports (it won't charge, the hinge slips) often isn't
+  // visible; their word lifts the item past "looks fine" so parts get priced.
+  const damage = params.ownerReported ? Math.max(damageLevel(faults), 0.5) : damageLevel(faults);
   const ranked = rankFaults(faults);
   const topFault = ranked[0]?.question ?? null;
 

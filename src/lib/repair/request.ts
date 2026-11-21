@@ -36,6 +36,7 @@ export const RepairRequestSchema = z.object({
   mimeType: z.enum(["image/jpeg", "image/png", "image/webp"]),
   item: TracedItemSchema,
   note: z.string().trim().max(500).optional(),
+  ownerReported: z.boolean().optional().default(false),
   bypassCache: z.boolean().optional().default(false),
 });
 

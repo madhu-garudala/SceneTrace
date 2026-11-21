@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { imageBase64, mimeType, item, note, bypassCache } = parsed.data;
+  const { imageBase64, mimeType, item, note, ownerReported, bypassCache } = parsed.data;
   const traceId = `trace_${crypto.randomUUID()}`;
   const startedAt = Date.now();
 
@@ -38,6 +38,7 @@ export async function POST(request: Request) {
       imageHash,
       label: item.label.trim().toLowerCase(),
       note: (note ?? "").toLowerCase(),
+      ownerReported,
     });
     const { value, cacheHit } = await withServerCache({
       key,
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
           mimeType,
           item: item as unknown as TracedItem,
           note,
+          ownerReported,
         }),
     });
     logServerSpan({

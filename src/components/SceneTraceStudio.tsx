@@ -818,7 +818,10 @@ export function SceneTraceStudio({
       // background, once offers are already on screen (damaged items first).
       if (useCamera && workingItems.length > 0) {
         const target = workingItems.find((it) => it.condition?.damageVisible) ?? workingItems[0];
-        void runRepair(target, target.condition?.signs.join("; ") || undefined);
+        const said = queuedDiagnoseRef.current;
+        queuedDiagnoseRef.current = null;
+        if (said !== null) void runRepair(target, said, true);
+        else void runRepair(target, target.condition?.signs.join("; ") || undefined);
       }
 
       if (agentRun) {
@@ -1344,6 +1347,8 @@ export function SceneTraceStudio({
     error: string | null;
   } | null>(null);
   const repairRunRef = useRef(0);
+  // "It's broken" said before the item is found waits for the trace to finish.
+  const queuedDiagnoseRef = useRef<string | null>(null);
 
   const DEFAULT_VOICE_QUESTION = "What is this product and where can I buy it?";
 
@@ -1550,7 +1555,7 @@ export function SceneTraceStudio({
     return null;
   };
 
-  const runRepair = async (item: TracedItem, note?: string) => {
+  const runRepair = async (item: TracedItem, note?: string, ownerReported = false) => {
     const runId = ++repairRunRef.current;
     setActiveItemId(item.itemId);
     setRepairState({ itemId: item.itemId, label: item.label, loading: true, verdict: null, error: null });
@@ -1560,7 +1565,7 @@ export function SceneTraceStudio({
       const res = await fetch("/api/traces/repair", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...image, item, note: note?.slice(0, 500) }),
+        body: JSON.stringify({ ...image, item, note: note?.slice(0, 500), ownerReported }),
       });
       const body = (await res.json().catch(() => null)) as
         | (RepairVerdict & { error?: string; message?: string })
@@ -1701,8 +1706,12 @@ export function SceneTraceStudio({
       return askToAdd(offer);
     },
     diagnose: (note) => {
-      if (!activeItem) return;
-      return runRepair(activeItem, note);
+      const said = note?.trim() || "The owner says it needs fixing.";
+      if (!activeItem) {
+        queuedDiagnoseRef.current = said;
+        return;
+      }
+      return runRepair(activeItem, said, true);
     },
     nextItem: () => {
       if (items.length > 1 && activeItem) {
