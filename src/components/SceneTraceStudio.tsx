@@ -1511,8 +1511,16 @@ export function SceneTraceStudio({
   voiceActionsRef.current = voiceActions;
 
   const handleVoiceIntent = useCallback(
-    (intent: VoiceIntent, slots: VoiceSlots) =>
-      dispatchVoiceIntent(intent, slots, voiceActionsRef.current),
+    (intent: VoiceIntent, slots: VoiceSlots) => {
+      // Any new spoken command moves on from an open checkout, bag or evidence
+      // overlay; otherwise the next step happens hidden behind it.
+      if (intent !== "unknown" && intent !== "checkout") {
+        setCheckoutModalOpen(false);
+        setBagOpen(false);
+        if (intent !== "show_evidence") setDiagnosticsOpen(false);
+      }
+      return dispatchVoiceIntent(intent, slots, voiceActionsRef.current);
+    },
     [],
   );
 
