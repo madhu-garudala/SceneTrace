@@ -139,7 +139,7 @@ export async function extractSlots(
           {
             parts: [
               {
-                text: `Extract slots from a spoken shopping command (intent: ${intent}). The text may be misheard speech-to-text; fix obvious mishearings in 'question'. Use empty string / 0 for anything not stated.\nCommand: "${text}"`,
+                text: `Extract slots from a spoken shopping command (intent: ${intent}). The text may be misheard speech-to-text; for 'question' keep the user's own words, only fixing clear mishearings; never invent a brand or product that was not said. Use empty string / 0 for anything not stated.\nCommand: "${text}"`,
               },
             ],
           },
@@ -153,17 +153,17 @@ export async function extractSlots(
           responseSchema: toGeminiSchema(SLOT_SCHEMA),
         },
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(6_000),
     });
-    if (!res.ok) return {};
+    if (!res.ok) return withFallback(intent, text, {});
     const json = (await res.json()) as {
       candidates?: { content?: { parts?: { text?: string }[] } }[];
     };
     const t = json.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text;
-    if (!t) return {};
-    return pickSlots(intent, JSON.parse(t));
+    if (!t) return withFallback(intent, text, {});
+    return withFallback(intent, text, pickSlots(intent, JSON.parse(t)));
   } catch {
-    return {};
+    return withFallback(intent, text, {});
   }
 }
 
@@ -182,6 +182,10 @@ function toGeminiSchema(s: unknown): unknown {
     return n;
   };
   return conv(s);
+}
+
+function withFallback(intent: VoiceIntent, text: string, slots: VoiceSlots): VoiceSlots {
+  return intent === "trace" && !slots.question ? { ...slots, question: text } : slots;
 }
 
 export function pickSlots(intent: VoiceIntent, raw: Record<string, unknown>): VoiceSlots {
