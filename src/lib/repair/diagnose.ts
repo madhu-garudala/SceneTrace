@@ -4,7 +4,9 @@ import {
   buildFaults,
   damageLevel,
   decide,
+  applyPartPriceFloor,
   filterByFit,
+  poolOffers,
   formatMoney,
   median,
   rankFaults,
@@ -65,10 +67,10 @@ const BANK_JSON_SCHEMA = {
 const QUERY_SCHEMA = {
   type: "object",
   properties: {
-    partQuery: { type: "string" },
+    partQueries: { type: "array", items: { type: "string" } },
     replacementQuery: { type: "string" },
   },
-  required: ["partQuery", "replacementQuery"],
+  required: ["partQueries", "replacementQuery"],
 } as const;
 
 const SUMMARY_SCHEMA = {
@@ -99,6 +101,7 @@ async function generateJson(params: {
   prompt: string;
   schema: object;
   image?: ImageInput;
+  temperature?: number;
   signal?: AbortSignal;
 }): Promise<unknown> {
   const parts: Record<string, unknown>[] = [];
@@ -124,7 +127,7 @@ async function generateJson(params: {
       generationConfig: {
         responseMimeType: "application/json",
         responseJsonSchema: params.schema,
-        temperature: 0.2,
+        temperature: params.temperature ?? 0.2,
         // thinkingBudget 0 is mandatory on Gemini 4. Even so it spends ~250
         // hidden tokens, so the ceiling must leave room for the answer.
         maxOutputTokens: 2048,
@@ -253,22 +256,27 @@ export async function scoreBank(params: {
 
 async function writeQueries(params: {
   item: TracedItem;
-  topFault: string | null;
+  topFaults: string[];
   note?: string;
   signal?: AbortSignal;
-}): Promise<{ partQuery: string; replacementQuery: string }> {
+}): Promise<{ partQueries: string[]; replacementQuery: string }> {
   const known = Boolean(params.item.modelReference?.trim());
   const prompt = [
-    "Write two shopping-catalog search strings.",
+    "Write shopping-catalog search strings: three for repair parts and one for a new replacement.",
     describeItem(params.item),
-    params.topFault ? `Most likely fault: ${params.topFault}` : null,
+    params.topFaults[0] ? `Most likely fault: ${params.topFaults[0]}` : null,
+    params.topFaults[1] ? `Second most likely fault: ${params.topFaults[1]}` : null,
     params.note ? `The owner says: "${params.note}"` : null,
     "",
+    "partQueries (exactly 3, in this order):",
+    "1. the specific replacement component that fixes the most likely fault.",
+    "2. the specific replacement component that fixes the second fault (or another plausible structural fault if there is only one).",
+    "3. a broader query shaped like \"<item> repair part for <subassembly>\" naming the subassembly involved.",
     known
-      ? "partQuery: the specific replacement component that fixes the fault, model-specific (include brand and model)."
-      : "partQuery: the specific replacement component that fixes the fault, described by brand (if known) and physical characteristics (size, shape, material, fit). The exact model is UNKNOWN: do not guess or invent a model number.",
+      ? "Include brand and model in each."
+      : "Describe by brand (if known) and physical characteristics. The exact model is UNKNOWN: do not guess or invent a model number.",
     "replacementQuery: the whole item, brand new (brand and model only if given above; never guess a model).",
-    "Each string is at most 6 words, no filler words.",
+    "Each string is at most 7 words, no filler words.",
   ]
     .filter((l) => l !== null)
     .join("\n");
@@ -276,12 +284,21 @@ async function writeQueries(params: {
     model: TEXT_MODEL,
     prompt,
     schema: QUERY_SCHEMA,
+    temperature: 0,
     signal: params.signal,
-  })) as { partQuery?: string; replacementQuery?: string };
-  const partQuery = String(raw.partQuery ?? "").trim();
+  })) as { partQueries?: string[]; replacementQuery?: string };
+  const partQueries = Array.from(
+    new Set(
+      (Array.isArray(raw.partQueries) ? raw.partQueries : [])
+        .map((q) => String(q).trim())
+        .filter(Boolean),
+    ),
+  ).slice(0, 3);
   const replacementQuery = String(raw.replacementQuery ?? "").trim();
-  if (!partQuery || !replacementQuery) throw new Error("Empty repair queries.");
-  return { partQuery, replacementQuery };
+  if (partQueries.length === 0 || !replacementQuery) {
+    throw new Error("Empty repair queries.");
+  }
+  return { partQueries, replacementQuery };
 }
 
 function toRepairOffer(c: CandidateForScoring): RepairOffer | null {
@@ -383,7 +400,7 @@ async function rerankFit(params: {
 
 async function fitOffers(params: {
   offers: RepairOffer[];
-  query: string;
+  query: string | string[];
   statement: (o: RepairOffer) => string;
   criteria: { true_description: string; false_description: string };
   image: ImageInput;
@@ -466,27 +483,43 @@ export async function diagnoseRepair(params: {
   // Nothing meaningfully wrong: skip part search entirely.
   if (damage >= 0.35) {
     try {
-      const q = await timed(() => writeQueries({ item, topFault, note, signal }));
+      const q = await timed(() =>
+        writeQueries({
+          item,
+          topFaults: ranked.slice(0, 2).map((f) => f.question),
+          note,
+          signal,
+        }),
+      );
       queryMs = q.ms;
-      partQuery = q.value.partQuery;
+      const partQueries = q.value.partQueries;
+      const knownModel = Boolean(item.modelReference?.trim());
+      partQuery = partQueries.join(" | ");
       replacementQuery = q.value.replacementQuery;
       const s = await timed(() =>
         Promise.all([
-          searchOffers(partQuery, item, signal)
+          Promise.all(
+            partQueries.map((pq) =>
+              searchOffers(pq, item, signal).catch(() => [] as RepairOffer[]),
+            ),
+          )
+            .then((lists) => applyPartPriceFloor(poolOffers(lists)))
             .then((offers) =>
               fitOffers({
                 offers,
-                query: partQuery,
+                query: partQueries,
                 criteria: {
                   true_description:
                     "The listing is a replacement component that would fix the stated fault on this item.",
                   false_description:
-                    "The listing is an accessory, cushion, cover, case, cable or unrelated product, does not address the fault, or is for a different model.",
+                    knownModel
+                      ? "The listing is an accessory, cushion, cover, case, cable or unrelated product, does not address the fault, or is for a different model."
+                      : "The listing is an accessory, cushion, cover, case, cable, tool kit or unrelated product, or does not address the fault. (The exact model is unknown, so a part made for a similar model of the same brand and product type is acceptable.)",
                 },
                 image,
                 signal,
                 statement: (o) =>
-                  `"${o.title}" at ${formatMoney(o.amountMinor, o.currency)} is a genuine, compatible replacement part that would fix this fault on ${item.label}: ${topFault ?? note ?? "visible wear"}. It is NOT an ear pad, cushion, cover, case or cable when the fault is structural, and not a part for a different model.`,
+                  `"${o.title}" at ${formatMoney(o.amountMinor, o.currency)} is a genuine, compatible replacement part that would fix this fault on ${item.label}: ${topFault ?? note ?? "visible wear"}. It is NOT an ear pad, cushion, cover, case or cable when the fault is structural${knownModel ? ", and not a part for a different model" : "; a part for a similar model of the same brand is acceptable because the exact model is unknown"}.`,
               }),
             )
             .catch(() => [] as RepairOffer[]),
